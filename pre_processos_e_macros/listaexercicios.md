@@ -206,5 +206,17 @@ int main(){ <br>
 
 ## RESPOSTA
 <code>
+#include &ltstdio.h&gt <br>
 
+#define INVERT(number1,number2)\ <br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;int aux = number1;\ <br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;number1  = number2;\ <br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;number2 = aux; <br>
+ 
+ int main(){<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;int number1 = 5; <br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;int number2 = 10; <br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;INVERT(number1,number2); <br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;printf("%d \n %d", number1, number2); <br>
+ } <br>
 </code>
