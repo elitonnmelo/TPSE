@@ -63,3 +63,8 @@
 #### VERDADEIRO, POIS COMO FOI DITO NO ITEM ACIMA, A OPERACAO ^ RETORNA VERDADEIRO APENAS QUANDO OS BITS SAO DIFERENTES, OU SEJA 1 ^ 0 = 1, OU 0 ^ 1 = 1, JA QUANDO TEMOS BITS IGUAIS  COM 1 ^ 1 OU 0 ^ 0 O RESULTADO VAI SER 0, LOGO POR ESTARMOS COMPARANDO DOIS VALORES IGUAIS O RESULTADO DESSA OPERACAO SERA 0.
 ### H:  For any three two digit hexadecimal numbers a, b and c: If a ^ b = c then a ^ c = b.
 #### VERDADEIRO, POIS A OPERACAO ^ E REVERSIVEL, OU SEJA SE APLICARMOS A OPERACAO ^ DUAS VEZES VOLTAREMOS AO VALOR ORIGINAL
+
+
+# 5. Write a program that counts the number of bits set in an integer. For example, the number 5 (decimal), which is 0000000000000101 (binary), has two bits set.
+
+## RESPOSTAS EM ARQUIVOS SEPARADO (contadorBinario.c)
