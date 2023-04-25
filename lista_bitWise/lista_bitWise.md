@@ -68,3 +68,7 @@
 # 5. Write a program that counts the number of bits set in an integer. For example, the number 5 (decimal), which is 0000000000000101 (binary), has two bits set.
 
 ## RESPOSTAS EM ARQUIVOS SEPARADO (contadorBinario.c)
+
+# 6. Write a program that takes a 32-bit integer (long int) and splits it into eight 4-bit values. (Be careful of the sign bit.)
+
+## RESPOSTAS EM ARQUIVOS SEPARADO (longBinario.c)
