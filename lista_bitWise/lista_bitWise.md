@@ -72,3 +72,7 @@
 # 6. Write a program that takes a 32-bit integer (long int) and splits it into eight 4-bit values. (Be careful of the sign bit.)
 
 ## RESPOSTAS EM ARQUIVOS SEPARADO (longBinario.c)
+
+# 7. Write a program that will take the bits in a number and shift them to the left end. For example, 01010110 (binary) would become 11110000 (binary).
+
+## REPOSTAS EM ARQUIVO SEPARADO (delocamentoBin.c)
