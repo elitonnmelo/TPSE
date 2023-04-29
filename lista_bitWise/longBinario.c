@@ -12,7 +12,7 @@ void print_bin(int num) {
 void maskBin(long int num){
     long int mask = 0b1111;
     int group;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 8; i > 0; i--) {
         group = mask & num;
         print_bin(group);
         printf(" ");
@@ -21,7 +21,7 @@ void maskBin(long int num){
 }
 
 int main(){
-    long int num = 0b10101010101101011010101001100010;
+    long int num = 0b11101010;
     maskBin(num);
     return 0;
 }
