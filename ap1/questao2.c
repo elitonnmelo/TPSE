@@ -1,32 +1,39 @@
-/*#include <stdio.h>
-
-void shift_left(unsigned int num, int size) {
-    unsigned int mask = 1 << (size - 1);
-    unsigned int result = 0;
-    
-    for (int i = 0; i < size; i++) {
-        if (num & mask) { // verifica se o bit mais significativo é 1
-            result |= 1 << (size - 1 - i); // adiciona o bit extraído à variável de resultado
-        }
-        num <<= 1; // desloca o número para a esquerda em 1 bit
-    }
-    
-    printf("%d", result);
-}
-
-int main() {
-    unsigned int num = 0b01010110;
-    int size = 8;
-    shift_left(num, size);
-    return 0;
-}*/
-
 #include <stdio.h>
 
 #define MASK 0b10000000000000000000000000000000
 
+int sizeBits(int num) {
+    int count = 0;
+    while ( num != 0 ) {
+        count++;
+        num >>= 1;
+    }
+    return count;
+}
+
+int printFor(int num) {
+    float bitsNumber = (float)sizeBits(num)/4;
+    if ((bitsNumber != (int)bitsNumber)){
+        bitsNumber++;
+    }
+    return bitsNumber = (int)bitsNumber * 4;
+}
+
+void printBin(int vet[], int num) {
+    int aux = printFor(num);
+    for(int i = 0; i < aux ; i++) {
+        if(vet[i] == 1){
+            printf("%d", 1);
+        }
+        else {
+            printf("%d", 0);
+        }
+    }
+}
+
 void shift_left(unsigned int num) {
     int num2 = num;
+    int num3 = num;
     //int MASK  = 0b1;
     int count1 = 0;
     int count0 = 0;
@@ -68,18 +75,14 @@ void shift_left(unsigned int num) {
         vet[i] = aux0[j];
         j++;
     }
+    printBin(vet, num3);
 
-    for (int it = 0; it < size; it++){
-        printf("%d", vet[it]);
-    }
     
 }
 
 int main() {
-    //unsigned int num = 0b01010110;
     unsigned int num;
     scanf("%d", &num);
-    //int size = 8;
     shift_left(num);
     return 0;
 }
