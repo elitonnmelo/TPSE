@@ -14,13 +14,8 @@ int main() {
         gpioREG &= ~gpio_enabled;
     }
     //C: escrever a logica binária para setar a variável gpioREG como entrada (gpio_direction).
-    gpioREG = (gpioREG & ~gpio_enable) | gpio_direction;
+    gpio &= ~gpio_direction;
     //D: escrever a logica binaria para alterar o gpioREG como nivel alto (gpio_level) ou nivel baixo. Exemplo se ele estava como alto passar para baixo e vice -versa.
-    // Alterna o nível de gpioREG entre alto e baixo
-    if (gpioREG & gpio_level) {   // Se o nível é alto
-        gpioREG ^= gpio_level;   // Inverte o bit correspondente para baixo
-    } else {                      // Se o nível é baixo
-        gpioREG |= gpio_level;   // Altera o bit correspondente para alto
-    }
+    gpioREG ^= gpio_level;  
 
 }
