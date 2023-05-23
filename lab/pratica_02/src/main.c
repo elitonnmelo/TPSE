@@ -45,6 +45,9 @@
 
 
 unsigned int flagBlink;
+unsigned int flagBlink2;
+unsigned int flagBlink3;
+unsigned int flagBlink4;
 
 /*****************************************************************************
 **                INTERNAL FUNCTION PROTOTYPES
@@ -52,6 +55,9 @@ unsigned int flagBlink;
 static void delay();
 static void ledInit();
 static void ledToggle();
+static void ledToggle2();
+static void ledToggle3();
+static void ledToggle4();
 
 /* 
  * ===  FUNCTION  ======================================================================
@@ -60,14 +66,45 @@ static void ledToggle();
  * =====================================================================================
  */
 int _main(void){
-	flagBlink=0;	//init flag
+	flagBlink=0;
+	flagBlink2=0;	//init flag
+	flagBlink3=0;
+	flagBlink4=0;
   	
 	/* Configure the green LED control pin. */
   	ledInit();
+	//ledInit2();
   
   	while (1){
     	/* Change the state of the green LED. */
     	ledToggle();
+		ledToggle4();
+		delay();
+		ledToggle();
+		ledToggle4();
+		delay();
+		ledToggle2();
+		ledToggle3();
+		delay();
+		ledToggle2();
+		ledToggle3();
+		delay();
+
+		ledToggle();
+		delay();
+		ledToggle2();
+		delay();
+		ledToggle3();
+		delay();
+		ledToggle4();
+		delay();
+		ledToggle();
+		delay();
+		ledToggle2();
+		delay();
+		ledToggle3();
+		delay();
+		ledToggle4();
 		delay();
 	}
 
@@ -94,7 +131,8 @@ static void delay(){
  */
 void ledInit( ){
 	
-	unsigned int val_temp; 	
+	unsigned int val_temp; 
+	
 	/*-----------------------------------------------------------------------------
 	 *  configure clock GPIO in clock module
 	 *-----------------------------------------------------------------------------*/
@@ -110,10 +148,13 @@ void ledInit( ){
 	 *-----------------------------------------------------------------------------*/
 	val_temp = HWREG(SOC_GPIO_1_REGS+GPIO_OE);
 	val_temp &= ~(1<<21);
+	val_temp &= ~(1<<22);
+	val_temp &= ~(1<<23);
+	val_temp &= ~(1<<24);
+
 	HWREG(SOC_GPIO_1_REGS+GPIO_OE) = val_temp;
 	
 }/* -----  end of function ledInit  ----- */
-
 
 
 /* 
@@ -133,12 +174,33 @@ void ledToggle(){
 		}
 }/* -----  end of function ledToggle  ----- */
 
+void ledToggle2(){
 
+		flagBlink2^= TOGGLE;
 
+		if(flagBlink2){
+			HWREG(SOC_GPIO_1_REGS+GPIO_SETDATAOUT) = 1<<22;
+		}else{
+			HWREG(SOC_GPIO_1_REGS+GPIO_CLEARDATAOUT) = 1<<22;
+		}
+}/* -----  end of function ledToggle  ----- */
+void ledToggle3(){
 
+		flagBlink3^= TOGGLE;
 
+		if(flagBlink3){
+			HWREG(SOC_GPIO_1_REGS+GPIO_SETDATAOUT) = 1<<23;
+		}else{
+			HWREG(SOC_GPIO_1_REGS+GPIO_CLEARDATAOUT) = 1<<23;
+		}
+}/* -----  end of function ledToggle  ----- */
+void ledToggle4(){
 
+		flagBlink4^= TOGGLE;
 
-
-
-
+		if(flagBlink4){
+			HWREG(SOC_GPIO_1_REGS+GPIO_SETDATAOUT) = 1<<24;
+		}else{
+			HWREG(SOC_GPIO_1_REGS+GPIO_CLEARDATAOUT) = 1<<24;
+		}
+}/* -----  end of function ledToggle  ----- */
