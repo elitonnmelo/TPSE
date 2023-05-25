@@ -29,6 +29,13 @@
 #define CM_PER_GPIO1_CLKCTRL_MODULEMODE_ENABLE   				(0x2u)
 #define CM_PER_GPIO1_CLKCTRL_OPTFCLKEN_GPIO_1_GDBCLK   			(0x00040000u)
 
+#define CM_PER_GPIO2											0xB0
+#define CM_PER_GPIO2_CLKCTRL_MODULEMODE_ENABLE   				(0x2u)
+#define CM_PER_GPIO2_CLKCTRL_OPTFCLKEN_GPIO_2_GDBCLK   			(0x00040000u)
+
+#define CM_conf_lcd_data2										0x8A8
+#define CM_conf_lcd_data3										0x8AC
+
 #define CM_conf_gpmc_ben1      	 								0x0878
 #define CM_conf_gpmc_a5         								0x0854
 #define CM_conf_gpmc_a6         								0x0818
@@ -49,15 +56,18 @@ unsigned int flagBlink2;
 unsigned int flagBlink3;
 unsigned int flagBlink4;
 
+
 /*****************************************************************************
 **                INTERNAL FUNCTION PROTOTYPES
 *****************************************************************************/
 static void delay();
 static void ledInit();
+
 static void ledToggle();
 static void ledToggle2();
 static void ledToggle3();
 static void ledToggle4();
+
 
 /* 
  * ===  FUNCTION  ======================================================================
@@ -70,10 +80,11 @@ int _main(void){
 	flagBlink2=0;	//init flag
 	flagBlink3=0;
 	flagBlink4=0;
+	
   	
 	/* Configure the green LED control pin. */
   	ledInit();
-	//ledInit2();
+	
   
   	while (1){
     	/* Change the state of the green LED. */
@@ -106,6 +117,9 @@ int _main(void){
 		delay();
 		ledToggle4();
 		delay();
+		
+		
+		
 	}
 
 	return(0);
@@ -142,6 +156,9 @@ void ledInit( ){
 	 * configure mux pin in control module
 	 *-----------------------------------------------------------------------------*/
  	HWREG(SOC_CONTROL_REGS+CM_conf_gpmc_a5) |= 7;
+	HWREG(SOC_CONTROL_REGS+CM_conf_gpmc_a6) |= 7;
+	HWREG(SOC_CONTROL_REGS+CM_conf_gpmc_a7) |= 7;
+	HWREG(SOC_CONTROL_REGS+CM_conf_gpmc_a8) |= 7;
  
 	/*-----------------------------------------------------------------------------
 	 *  set pin direction 
@@ -155,7 +172,6 @@ void ledInit( ){
 	HWREG(SOC_GPIO_1_REGS+GPIO_OE) = val_temp;
 	
 }/* -----  end of function ledInit  ----- */
-
 
 /* 
  * ===  FUNCTION  ======================================================================
