@@ -55,18 +55,21 @@ unsigned int flagBlink;
 unsigned int flagBlink2;
 unsigned int flagBlink3;
 unsigned int flagBlink4;
-
+unsigned int flagBlink5;
+unsigned int flagBlink6;
 
 /*****************************************************************************
 **                INTERNAL FUNCTION PROTOTYPES
 *****************************************************************************/
 static void delay();
 static void ledInit();
-
+static void ledInit2();
 static void ledToggle();
 static void ledToggle2();
 static void ledToggle3();
 static void ledToggle4();
+static void ledToggle5();
+static void ledToggle6();
 
 
 /* 
@@ -80,11 +83,13 @@ int _main(void){
 	flagBlink2=0;	//init flag
 	flagBlink3=0;
 	flagBlink4=0;
+	flagBlink5=0;
+	flagBlink6=0;
 	
   	
 	/* Configure the green LED control pin. */
   	ledInit();
-	
+	ledInit2();
   
   	while (1){
     	/* Change the state of the green LED. */
@@ -247,3 +252,24 @@ void ledToggle4(){
 			HWREG(SOC_GPIO_1_REGS+GPIO_CLEARDATAOUT) = 1<<24;
 		}
 }/* -----  end of function ledToggle  ----- */
+void ledToggle5(){
+
+		flagBlink5^= TOGGLE;
+
+		if(flagBlink5){
+			HWREG(SOC_GPIO_2_REGS+GPIO_SETDATAOUT) = 1<<8;
+		}else{
+			HWREG(SOC_GPIO_2_REGS+GPIO_CLEARDATAOUT) = 1<<8;
+		}
+}/* -----  end of function ledToggle  ----- */
+void ledToggle6(){
+
+		flagBlink6 ^= TOGGLE;
+
+		if(flagBlink6){
+			HWREG(SOC_GPIO_2_REGS+GPIO_SETDATAOUT) = 1<<9;
+		}else{
+			HWREG(SOC_GPIO_2_REGS+GPIO_CLEARDATAOUT) = 1<<9;
+		}
+}/* -----  end of function ledToggle  ----- */
+
