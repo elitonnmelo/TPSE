@@ -122,6 +122,22 @@ int _main(void){
 		delay();
 		ledToggle4();
 		delay();
+
+		ledToggle5();
+		ledToggle6();
+		delay();
+		ledToggle5();
+		ledToggle6();
+		delay();
+
+		ledToggle5();
+		delay();
+		ledToggle5();
+		delay();
+		ledToggle6();
+		delay();
+		ledToggle6();
+		delay();
 		
 		
 		
