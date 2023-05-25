@@ -6,11 +6,12 @@
  *    Description:  
  *
  *        Version:  1.0
- *        Created:  12/02/2017 20:05:55
+ *        Created:  24/05/2023
  *       Revision:  none
  *       Compiler:  arm-none-eabi-gcc
  *
- *         Author:  Francisco Helder (FHC), helderhdw@gmail.com
+ *         Author:  Éliton Pereira Melo
+ * 		  Teacher:	Francisco Helder (FHC), helderhdw@gmail.com
  *   Organization:  UFC-Quixadá
  *
  * =====================================================================================
