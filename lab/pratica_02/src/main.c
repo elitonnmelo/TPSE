@@ -182,6 +182,12 @@ void ledInit2(){
 
 	HWREG(SOC_CM_PER_REGS + CM_PER_GPIO2) |= CM_PER_GPIO2_CLKCTRL_OPTFCLKEN_GPIO_2_GDBCLK | CM_PER_GPIO2_CLKCTRL_MODULEMODE_ENABLE;
 
+	/*-----------------------------------------------------------------------------
+	 * configure mux pin in control module
+	 *-----------------------------------------------------------------------------*/
+
+	HWREG(SOC_CONTROL_REGS+CM_conf_lcd_data2) |= 7;
+	HWREG(SOC_CONTROL_REGS+CM_conf_lcd_data3) |= 7;
 	
 } /* -----  end of function ledInit2  ----- */
 
