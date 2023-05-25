@@ -188,6 +188,14 @@ void ledInit2(){
 
 	HWREG(SOC_CONTROL_REGS+CM_conf_lcd_data2) |= 7;
 	HWREG(SOC_CONTROL_REGS+CM_conf_lcd_data3) |= 7;
+
+	/*-----------------------------------------------------------------------------
+	 *  set pin direction 
+	 *-----------------------------------------------------------------------------*/
+	val_temp = HWREG(SOC_GPIO_2_REGS+GPIO_OE);
+	val_temp &= ~(1<<8);
+	val_temp &= ~(1<<9);
+	HWREG(SOC_GPIO_2_REGS+GPIO_OE) = val_temp;
 	
 } /* -----  end of function ledInit2  ----- */
 
