@@ -25,6 +25,10 @@
 *****************************************************************************/
 #define TIME													1000000
 #define TOGGLE          										(0x01u)
+#define WDT1													0x44E35000
+
+#define WDT_WSPR												0x48
+#define WDT_WWPS												0x34
 
 #define CM_PER_GPIO1											0xAC
 #define CM_PER_GPIO1_CLKCTRL_MODULEMODE_ENABLE   				(0x2u)
@@ -80,6 +84,20 @@ static void ledToggle6();
  * =====================================================================================
  */
 int _main(void){
+
+	HWREG( WDT1 + WDT_WSPR ) = 0xAAAA;
+
+	while (HWREG((WDT1 + WDT_WWPS)  & (1<<4)) != 0){
+
+	}
+
+	HWREG( WDT1 + WDT_WSPR) =  0x5555;
+
+	while (HWREG((WDT1 + WDT_WWPS)  & (1<<4)) != 0){
+
+	}
+	
+
 	flagBlink=0;
 	flagBlink2=0;	//init flag
 	flagBlink3=0;
