@@ -38,11 +38,14 @@
 #define CM_PER_GPIO2_CLKCTRL_MODULEMODE_ENABLE   				(0x2u)
 #define CM_PER_GPIO2_CLKCTRL_OPTFCLKEN_GPIO_2_GDBCLK   			(0x00040000u)
 
+
 #define CM_PER_GPIO3											0xB4
 #define CM_PER_GPIO3_CLKCTRL_MODULEMODE_ENABLE   				(0x2u)
 #define CM_PER_GPIO3_CLKCTRL_OPTFCLKEN_GPIO_3_GDBCLK   			(0x00040000u)
 
-#define CM_conf_mcasp0_fsr										0x9A4
+#define GPIO_DATAIN												0x138
+
+#define CM_conf_mcasp0_fsr										0x09A4
 
 #define CM_conf_lcd_data2										0x8A8
 #define CM_conf_lcd_data3										0x8AC
@@ -71,7 +74,6 @@ unsigned int flagBlink4;
 unsigned int flagBlink5;
 unsigned int flagBlink6;
 
-unsigned int flag;
 
 /*****************************************************************************
 **                INTERNAL FUNCTION PROTOTYPES
@@ -85,8 +87,8 @@ static void ledToggle3();
 static void ledToggle4();
 static void ledToggle5();
 static void ledToggle6();
-static void buttonMode();
-static void buttonInit();
+static bool buttonMode(); // declarando estaticamente a função buttonMode 
+static void buttonInit(); // declarando estaticamente a função buttonInit
 
 
 /* 
@@ -97,15 +99,17 @@ static void buttonInit();
  */
 int _main(void){
 
+	//set watchdog
+
 	HWREG( WDT1 + WDT_WSPR ) = 0xAAAA;
 
-	while (HWREG((WDT1 + WDT_WWPS)  & (1<<4)) != 0){
+	while ((HWREG(WDT1 + WDT_WWPS)  & (1<<4)) != 0){
 
 	}
 
 	HWREG( WDT1 + WDT_WSPR) =  0x5555;
 
-	while (HWREG((WDT1 + WDT_WWPS)  & (1<<4)) != 0){
+	while ((HWREG(WDT1 + WDT_WWPS)  & (1<<4)) != 0){
 
 	}
 	
@@ -116,17 +120,19 @@ int _main(void){
 	flagBlink4=0;
 	flagBlink5=0;
 	flagBlink6=0;
-	flag = 0;
 	
   	
 	/* Configure the green LED control pin. */
   	ledInit();
 	ledInit2();
+
 	buttonInit();
+	
+	
   
   	while (1){
     	/* Change the state of the green LED. */
-		if (flag){
+		if (buttonMode()){ // acionar essa sequencia caso o botão seja pressionado.
 			ledToggle();
 			ledToggle4();
 			delay();
@@ -173,7 +179,7 @@ int _main(void){
 			ledToggle6();
 			delay();
 		}
-		else{
+		else{  // acionar essa sequencia caso o botão não seja pressionado.
 			ledToggle();
 			ledToggle2();
 			ledToggle3();
@@ -267,7 +273,7 @@ void buttonInit() {
 	unsigned int val_temp;
 
 	/*-----------------------------------------------------------------------------
-	 *  configure clock GPIO in clock module
+	 *  configure clock GPIO 3 in clock module
 	 *-----------------------------------------------------------------------------*/
 
 	HWREG(SOC_CM_PER_REGS + CM_PER_GPIO3) |= CM_PER_GPIO3_CLKCTRL_OPTFCLKEN_GPIO_3_GDBCLK | CM_PER_GPIO3_CLKCTRL_MODULEMODE_ENABLE;
@@ -277,19 +283,28 @@ void buttonInit() {
 	 *-----------------------------------------------------------------------------*/
 
 	HWREG(SOC_CONTROL_REGS+CM_conf_mcasp0_fsr) |= 7;
+	HWREG(SOC_CONTROL_REGS+CM_conf_mcasp0_fsr) |= (1<<5);
 
 	/*-----------------------------------------------------------------------------
-	 *  set pin direction 
+	 *  set pin direction as input
 	 *-----------------------------------------------------------------------------*/
 	val_temp = HWREG(SOC_GPIO_3_REGS+GPIO_OE);
-	val_temp |= ~(0<<19);
+	val_temp |= (1<<19);
 	HWREG(SOC_GPIO_3_REGS+GPIO_OE) = val_temp;
 
 }
 
-void buttonMode() {
 
-	flag ^= TOGGLE;
+// init function buttonMode
+
+bool buttonMode() {
+
+	
+	if (HWREG(SOC_GPIO_3_REGS+GPIO_DATAIN) & (1<<19)){
+		return true;
+	}
+	return false;
+	
 	
 }
 
