@@ -139,40 +139,35 @@ int main(void){
     	/* Change the state of the green LED. */
 
 		// Pinos da beaglebone
-		// Piscar os dois leds  da ponta juntos, apaga e depois faz o mesmo para os dois do meio.
     	ledToggle();
 		ledToggle4();
-		Delay(1000);
+		Delay(100);
 		ledToggle();
 		ledToggle4();
-		Delay(1000);
+		Delay(100);
 		ledToggle2();
 		ledToggle3();
-		Delay(1000);
+		Delay(100);
 		ledToggle2();
 		ledToggle3();
-		Delay(1000);
+		Delay(100);
 
 		// Pinos fora da Baglebone
 		// Piscar os dois leds juntos
 		ledToggle5();
 		ledToggle6();
-		Delay(1000);
+		Delay(100);
 		ledToggle5();
 		ledToggle6();
-		Delay(1000);
-
-		// Piscar os dois leds separados
-		ledToggle5();
-		Delay(1000);
-		ledToggle5();
-		Delay(1000);
-		ledToggle6();
-		Delay(1000);
-		ledToggle6();
-		Delay(1000);
 		
+		// Delay: 100 ms
+		// Frequencia: 1 Hz
+		// Periodo: 10 delay
 		
+		/*
+		Formula:   	delay = 1000/ (10 * frequencia)
+					frequencia(Hz): 1 / periodo (segundos)
+		*/
 		
 	}
 
