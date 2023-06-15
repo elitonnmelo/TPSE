@@ -111,13 +111,13 @@ int main(void){
 
 	HWREG( WDT1 + WDT_WSPR ) = 0xAAAA;
 
-	while (HWREG((WDT1 + WDT_WWPS)  & (1<<4)) != 0){
+	while ((HWREG(WDT1 + WDT_WWPS)  & (1<<4)) != 0){
 
 	}
 
 	HWREG( WDT1 + WDT_WSPR) =  0x5555;
 
-	while (HWREG((WDT1 + WDT_WWPS)  & (1<<4)) != 0){
+	while ((HWREG(WDT1 + WDT_WWPS)  & (1<<4)) != 0){
 
 	}
 	
@@ -141,31 +141,20 @@ int main(void){
 		// Pinos da beaglebone
     	ledToggle();
 		ledToggle4();
-		Delay(100);
-		ledToggle();
-		ledToggle4();
-		Delay(100);
-		ledToggle2();
-		ledToggle3();
-		Delay(100);
-		ledToggle2();
-		ledToggle3();
-		Delay(100);
+		
 
 		// Pinos fora da Baglebone
 		// Piscar os dois leds juntos
 		ledToggle5();
 		ledToggle6();
-		Delay(100);
-		ledToggle5();
-		ledToggle6();
+		Delay(10);
 		
-		// Delay: 100 ms
-		// Frequencia: 1 Hz
-		// Periodo: 10 delay
+		// Delay: 10 ms
+		// Frequencia: 50 Hz
+		// Periodo: 2 delay
 		
 		/*
-		Formula:   	delay = 1000/ (10 * frequencia)
+		Formula:   	delay = 1000/ (2 * frequencia)
 					frequencia(Hz): 1 / periodo (segundos)
 		*/
 		
