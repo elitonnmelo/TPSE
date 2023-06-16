@@ -140,6 +140,8 @@ int main(void){
 
 		// Pinos da beaglebone
     	ledToggle();
+		ledToggle2();
+		ledToggle3();
 		ledToggle4();
 		
 
@@ -147,10 +149,10 @@ int main(void){
 		// Piscar os dois leds juntos
 		ledToggle5();
 		ledToggle6();
-		Delay(10);
+		Delay(5);
 		
 		// Delay: 10 ms
-		// Frequencia: 50 Hz
+		// Frequencia: 100 Hz
 		// Periodo: 2 delay
 		
 		/*
