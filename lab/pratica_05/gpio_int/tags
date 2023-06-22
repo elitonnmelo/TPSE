@@ -1,0 +1,72 @@
+!_TAG_FILE_FORMAT	2	/extended format; --format=1 will not append ;" to lines/
+!_TAG_FILE_SORTED	1	/0=unsorted, 1=sorted, 2=foldcase/
+!_TAG_PROGRAM_AUTHOR	Darren Hiebert	/dhiebert@users.sourceforge.net/
+!_TAG_PROGRAM_NAME	Exuberant Ctags	//
+!_TAG_PROGRAM_URL	http://ctags.sourceforge.net	/official site/
+!_TAG_PROGRAM_VERSION	5.9~svn20110310	//
+CM_PER_GPIO1_CLKCTRL	inc/bbb_regs.h	48;"	d
+CM_PER_GPMCA7_REGS	inc/bbb_regs.h	55;"	d
+CM_PER_GPMCA8_REGS	inc/bbb_regs.h	56;"	d
+CM_PER_GPMCAD12_REGS	inc/bbb_regs.h	57;"	d
+CM_PER_RTC_CLKSTCTRL	inc/bbb_regs.h	50;"	d
+CM_PER_RTC_RTC_CLKCTRL	inc/bbb_regs.h	49;"	d
+CM_PER_TIMER7_CLKCTRL	inc/bbb_regs.h	51;"	d
+GPIO1_CLEARDATAOUT	inc/bbb_regs.h	65;"	d
+GPIO1_DATAIN	inc/bbb_regs.h	63;"	d
+GPIO1_IRQSTATUS_0	inc/bbb_regs.h	60;"	d
+GPIO1_IRQSTATUS_SET_0	inc/bbb_regs.h	61;"	d
+GPIO1_OE	inc/bbb_regs.h	62;"	d
+GPIO1_RISINGDETECT	inc/bbb_regs.h	64;"	d
+GPIO1_SETDATAOUT	inc/bbb_regs.h	66;"	d
+HWREG	inc/hw_types.h	44;"	d
+HWREGB	inc/hw_types.h	48;"	d
+HWREGBITB	inc/hw_types.h	56;"	d
+HWREGBITH	inc/hw_types.h	53;"	d
+HWREGBITW	inc/hw_types.h	50;"	d
+HWREGH	inc/hw_types.h	46;"	d
+INTC_BASE	inc/bbb_regs.h	26;"	d
+INTC_CONTROL	inc/bbb_regs.h	28;"	d
+INTC_ILR	inc/bbb_regs.h	29;"	d
+INTC_MIR_CLEAR2	inc/bbb_regs.h	30;"	d
+INTC_MIR_CLEAR3	inc/bbb_regs.h	31;"	d
+INTC_SIR_IRQ	inc/bbb_regs.h	27;"	d
+INTC_SYSCONFIG	inc/bbb_regs.h	32;"	d
+INTC_SYSSTATUS	inc/bbb_regs.h	33;"	d
+INTC_THRESHOLD	inc/bbb_regs.h	34;"	d
+ISR_Handler	src/main.c	/^void ISR_Handler(void){$/;"	f	signature:(void)
+NULL	inc/hw_types.h	36;"	d
+PIN1	src/main.c	/^	PIN1=1,$/;"	e	enum:_pinNum	file:
+PIN2	src/main.c	/^	PIN2$/;"	e	enum:_pinNum	file:
+SOC_CM_DPLL_CLKSEL_TIMER7_CLK	inc/bbb_regs.h	52;"	d
+TIMER_1MS_COUNT	inc/bbb_regs.h	73;"	d
+TIMER_OVERFLOW	inc/bbb_regs.h	74;"	d
+UART0_BASE	inc/bbb_regs.h	37;"	d
+UART0_LSR	inc/bbb_regs.h	40;"	d
+UART0_RHR	inc/bbb_regs.h	38;"	d
+UART0_THR	inc/bbb_regs.h	39;"	d
+WDT_BASE	inc/bbb_regs.h	43;"	d
+WDT_WSPR	inc/bbb_regs.h	44;"	d
+WDT_WWPS	inc/bbb_regs.h	45;"	d
+_BBB_REGS_H_	inc/bbb_regs.h	2;"	d
+_HW_TYPES_H_	inc/hw_types.h	2;"	d
+_pinNum	src/main.c	/^typedef enum _pinNum{$/;"	g	file:
+bool	inc/hw_types.h	/^}bool;$/;"	t	typeref:enum:__anon1
+butConfig	src/main.c	/^void butConfig ( ){$/;"	f
+delay	src/main.c	/^void delay(unsigned int mSec){$/;"	f	signature:(unsigned int mSec)
+disableWdt	src/main.c	/^void disableWdt(void){$/;"	f	signature:(void)
+false	inc/hw_types.h	/^   false = 0$/;"	e	enum:__anon1
+flag_gpio	src/main.c	/^bool flag_gpio;$/;"	v
+getCh	src/main.c	/^char getCh(){$/;"	f
+getString	src/main.c	/^int getString(char *buf, unsigned int length){$/;"	f	signature:(char *buf, unsigned int length)
+gpioIsrHandler	src/main.c	/^void gpioIsrHandler(void){$/;"	f	signature:(void)
+gpioSetup	src/main.c	/^void gpioSetup(){$/;"	f
+ledConfig	src/main.c	/^void ledConfig ( ){$/;"	f
+ledOff	src/main.c	/^void ledOff(pinNum pin){$/;"	f	signature:(pinNum pin)
+ledOn	src/main.c	/^void ledOn(pinNum pin){$/;"	f	signature:(pinNum pin)
+main	src/main.c	/^int main(void){$/;"	f	signature:(void)
+pinNum	src/main.c	/^}pinNum;$/;"	t	typeref:enum:_pinNum	file:
+putCh	src/main.c	/^void putCh(char c){$/;"	f	signature:(char c)
+putString	src/main.c	/^int putString(char *str, unsigned int length){$/;"	f	signature:(char *str, unsigned int length)
+readBut	src/main.c	/^unsigned int readBut ( ){$/;"	f
+tBoolean	inc/hw_types.h	/^typedef unsigned char tBoolean;$/;"	t
+true	inc/hw_types.h	/^   true = 1,$/;"	e	enum:__anon1

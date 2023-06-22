@@ -1,0 +1,919 @@
+cscope 15 $HOME/UFC/disciplinas/QXD0149/lab/old/gpio_int               0000005077
+	@inc/bbb_regs.h
+
+1 #i‚de‡
+_BBB_REGS_H_
+
+
+2 
+	#_BBB_REGS_H_
+
+
+	)
+
+26 
+	#INTC_BASE
+ 0x48200000
+
+	)
+
+27 
+	#INTC_SIR_IRQ
+ 0x48200040
+
+	)
+
+28 
+	#INTC_CONTROL
+ 0x48200048
+
+	)
+
+29 
+	#INTC_ILR
+ 0x48200100
+
+	)
+
+30 
+	#INTC_MIR_CLEAR2
+ 0x482000C8
+
+	)
+
+31 
+	#INTC_MIR_CLEAR3
+ 0x482000E8
+
+	)
+
+32 
+	#INTC_SYSCONFIG
+ 0x48200010
+
+	)
+
+33 
+	#INTC_SYSSTATUS
+ 0x48200014
+
+	)
+
+34 
+	#INTC_THRESHOLD
+ 0x48200068
+
+	)
+
+37 
+	#UART0_BASE
+ 0x44E09000
+
+	)
+
+38 
+	#UART0_RHR
+ 0x44E09000
+
+	)
+
+39 
+	#UART0_THR
+ 0x44E09000
+
+	)
+
+40 
+	#UART0_LSR
+ 0x44E09014
+
+	)
+
+43 
+	#WDT_BASE
+ 0x44E35000
+
+	)
+
+44 
+	#WDT_WSPR
+ 0x44E35048
+
+	)
+
+45 
+	#WDT_WWPS
+ 0x44E35034
+
+	)
+
+48 
+	#CM_PER_GPIO1_CLKCTRL
+ 0x44E000AC
+
+	)
+
+49 
+	#CM_PER_RTC_RTC_CLKCTRL
+ 0x44E00800
+
+	)
+
+50 
+	#CM_PER_RTC_CLKSTCTRL
+ 0x44E00804
+
+	)
+
+51 
+	#CM_PER_TIMER7_CLKCTRL
+ 0x44E0007C
+
+	)
+
+52 
+	#SOC_CM_DPLL_CLKSEL_TIMER7_CLK
+ 0x44E00504
+
+	)
+
+55 
+	#CM_PER_GPMCA7_REGS
+ 0x44E1085C
+
+	)
+
+56 
+	#CM_PER_GPMCA8_REGS
+ 0x44E10860
+
+	)
+
+57 
+	#CM_PER_GPMCAD12_REGS
+ 0x44E10830
+
+	)
+
+60 
+	#GPIO1_IRQSTATUS_0
+ 0x4804C02C
+
+	)
+
+61 
+	#GPIO1_IRQSTATUS_SET_0
+ 0x4804C034
+
+	)
+
+62 
+	#GPIO1_OE
+ 0x4804C134
+
+	)
+
+63 
+	#GPIO1_DATAIN
+ 0x4804C138
+
+	)
+
+64 
+	#GPIO1_RISINGDETECT
+ 0x4804C148
+
+	)
+
+65 
+	#GPIO1_CLEARDATAOUT
+ 0x4804C190
+
+	)
+
+66 
+	#GPIO1_SETDATAOUT
+ 0x4804C194
+
+	)
+
+73 
+	#TIMER_1MS_COUNT
+ 0x5DC0u
+
+	)
+
+74 
+	#TIMER_OVERFLOW
+ 0xFFFFFFFFu
+
+	)
+
+	@inc/hw_types.h
+
+1 #i‚de‡
+_HW_TYPES_H_
+
+
+2 
+	#_HW_TYPES_H_
+
+
+	)
+
+28 
+	ttBoﬁón
+;
+
+31 
+	måue
+ = 1,
+
+32 
+	mÁl£
+ = 0
+
+33 }
+	tboﬁ
+;
+
+35 #i‚de‡
+NULL
+
+
+36 
+	#NULL
+ ((*Ë0)
+
+	)
+
+44 
+	#HWREG
+(
+x
+) \
+
+45 (*((vﬁ©ûê*)(
+x
+)))
+
+	)
+
+46 
+	#HWREGH
+(
+x
+) \
+
+47 (*((vﬁ©ûê*)(
+x
+)))
+
+	)
+
+48 
+	#HWREGB
+(
+x
+) \
+
+49 (*((vﬁ©ûê*)(
+x
+)))
+
+	)
+
+50 
+	#HWREGBITW
+(
+x
+, 
+b
+) \
+
+51 
+	`HWREG
+((()(
+x
+) & 0xF0000000) | 0x02000000 | \
+
+52 ((()(
+x
+Ë& 0x000FFFFFË<< 5Ë| ((
+b
+Ë<< 2))
+
+	)
+
+53 
+	#HWREGBITH
+(
+x
+, 
+b
+) \
+
+54 
+	`HWREGH
+((()(
+x
+) & 0xF0000000) | 0x02000000 | \
+
+55 ((()(
+x
+Ë& 0x000FFFFFË<< 5Ë| ((
+b
+Ë<< 2))
+
+	)
+
+56 
+	#HWREGBITB
+(
+x
+, 
+b
+) \
+
+57 
+	`HWREGB
+((()(
+x
+) & 0xF0000000) | 0x02000000 | \
+
+58 ((()(
+x
+Ë& 0x000FFFFFË<< 5Ë| ((
+b
+Ë<< 2))
+
+	)
+
+	@src/main.c
+
+19 
+	~"bbb_ªgs.h
+"
+
+20 
+	~"hw_ty≥s.h
+"
+
+23 
+boﬁ
+ 
+	gÊag_gpio
+;
+
+25 
+	e_pöNum
+{
+
+26 
+	mPIN1
+=1,
+
+27 
+	mPIN2
+
+
+28 }
+	tpöNum
+;
+
+37 
+	$dißbÀWdt
+(){
+
+38 
+	`HWREG
+(
+WDT_WSPR
+) = 0xAAAA;
+
+39 (
+	`HWREG
+(
+WDT_WWPS
+) & (1<<4)));
+
+41 
+	`HWREG
+(
+WDT_WSPR
+) = 0x5555;
+
+42 (
+	`HWREG
+(
+WDT_WWPS
+) & (1<<4)));
+
+43 
+	}
+}
+
+51 
+	$dñay
+(
+mSec
+){
+
+52 vﬁ©ûê
+cou¡
+;
+
+54 
+cou¡
+=0; cou¡<
+mSec
+; count++);
+
+56 
+	}
+}
+
+64 
+	$putCh
+(
+c
+){
+
+65 !(
+	`HWREG
+(
+UART0_LSR
+) & (1<<5)));
+
+67 
+	`HWREG
+(
+UART0_THR
+Ë
+c
+;
+
+68 
+	}
+}
+
+76 
+	$gëCh
+(){
+
+77 !(
+	`HWREG
+(
+UART0_LSR
+) & (1<<0)));
+
+79 (
+	`HWREG
+(
+UART0_RHR
+));
+
+80 
+	}
+}
+
+88 
+	$putSåög
+(*
+°r
+, 
+Àngth
+){
+
+89 
+i
+ = 0; i < 
+Àngth
+; i++){
+
+90 
+	`putCh
+(
+°r
+[
+i
+]);
+
+92 (
+Àngth
+);
+
+93 
+	}
+}
+
+101 
+	$gëSåög
+(*
+buf
+, 
+Àngth
+){
+
+102 
+i
+ = 0; i < 
+Àngth
+; i ++){
+
+103 
+buf
+[
+i
+] = 
+	`gëCh
+();
+
+105 (
+Àngth
+);
+
+106 
+	}
+}
+
+114 
+	$gpioSëup
+(){
+
+116 
+	`HWREG
+(
+CM_PER_GPIO1_CLKCTRL
+) = 0x40002;
+
+119 
+	`HWREG
+(
+INTC_MIR_CLEAR3
+) |= (1<<2);
+
+120 
+	}
+}
+
+128 
+	$butC⁄fig
+ ( ){
+
+130 
+	`HWREG
+(
+CM_PER_GPMCAD12_REGS
+) |= 0x2F;
+
+133 
+	`HWREG
+(
+GPIO1_OE
+) |= 1<<12;
+
+135 
+Êag_gpio
+ = 
+Ál£
+;
+
+138 
+	`HWREG
+(
+GPIO1_IRQSTATUS_SET_0
+) |= 1<<12;
+
+141 
+	`HWREG
+(
+GPIO1_RISINGDETECT
+) |= 1<<12;
+
+142 
+	}
+}
+
+150 
+	$ÀdC⁄fig
+ ( ){
+
+152 
+	`HWREG
+(
+CM_PER_GPMCA7_REGS
+) |= 0x7;
+
+153 
+	`HWREG
+(
+CM_PER_GPMCA8_REGS
+) |= 0x7;
+
+156 
+	`HWREG
+(
+GPIO1_OE
+) &= ~(1<<23);
+
+157 
+	`HWREG
+(
+GPIO1_OE
+) &= ~(1<<24);
+
+159 
+	}
+}
+
+167 
+	$ªadBut
+ ( ){
+
+168 
+ãmp
+;
+
+169 
+ãmp
+ = 
+	`HWREG
+(
+GPIO1_DATAIN
+)&0x1000;
+
+171 (
+ãmp
+);
+
+172 
+	}
+}
+
+180 
+	$ÀdOff
+(
+pöNum
+ 
+pö
+){
+
+181 
+pö
+) {
+
+182 
+PIN1
+:
+
+183 
+	`HWREG
+(
+GPIO1_CLEARDATAOUT
+) |= (1<<23);
+
+185 
+PIN2
+:
+
+186 
+	`HWREG
+(
+GPIO1_CLEARDATAOUT
+) |= (1<<24);
+
+191 
+	}
+}
+
+199 
+	$ÀdOn
+(
+pöNum
+ 
+pö
+){
+
+201 
+pö
+) {
+
+202 
+PIN1
+:
+
+203 
+	`HWREG
+(
+GPIO1_SETDATAOUT
+) |= (1<<23);
+
+205 
+PIN2
+:
+
+206 
+	`HWREG
+(
+GPIO1_SETDATAOUT
+) |= (1<<24);
+
+211 
+	}
+}
+
+219 
+	$gpioI§H™dÀr
+(){
+
+222 
+	`HWREG
+(
+GPIO1_IRQSTATUS_0
+) = 0x1000;
+
+224 
+Êag_gpio
+ = 
+åue
+;
+
+225 
+	}
+}
+
+233 
+	$ISR_H™dÀr
+(){
+
+235 
+úq_numbî
+ = 
+	`HWREG
+(
+INTC_SIR_IRQ
+) & 0x7f;
+
+237 if(
+úq_numbî
+ == 98)
+
+238 
+	`gpioI§H™dÀr
+();
+
+241 
+	`HWREG
+(
+INTC_CONTROL
+) = 0x1;
+
+242 
+	}
+}
+
+250 
+	$maö
+(){
+
+253 
+	`gpioSëup
+();
+
+254 
+	`ÀdC⁄fig
+();
+
+255 
+	`butC⁄fig
+();
+
+256 
+	`dißbÀWdt
+();
+
+258 
+	`putSåög
+("gpio Interrupt...\n\r",19);
+
+259 
+	`ÀdOff
+(
+PIN1
+);
+
+260 
+	`ÀdOff
+(
+PIN2
+);
+
+261 
+	`dñay
+(0x3FFFF);
+
+263 
+åue
+){
+
+264 if(
+Êag_gpio
+){
+
+265 
+	`putSåög
+("buttonÖress!\n\r",15);
+
+266 
+	`ÀdOn
+(
+PIN1
+);
+
+267 
+	`dñay
+(0x3FFFF);
+
+268 
+	`ÀdOn
+(
+PIN2
+);
+
+269 
+	`dñay
+(0x3FFFF);
+
+270 
+	`ÀdOff
+(
+PIN1
+);
+
+271 
+	`dñay
+(0x3FFFF);
+
+272 
+	`ÀdOff
+(
+PIN2
+);
+
+273 
+	`dñay
+(0x3FFFF);
+
+274 
+Êag_gpio
+ = 
+Ál£
+;
+
+276 
+	`ÀdOn
+(
+PIN1
+);
+
+277 
+	`ÀdOn
+(
+PIN2
+);
+
+278 
+	`dñay
+(0x3FFFF);
+
+279 
+	`ÀdOff
+(
+PIN1
+);
+
+280 
+	`ÀdOff
+(
+PIN2
+);
+
+281 
+	`dñay
+(0x3FFFF);
+
+286 
+	}
+}
+
+	@
+1
+.
+1
+/usr/include
+3
+41
+inc/bbb_regs.h
+inc/hw_types.h
+src/main.c
