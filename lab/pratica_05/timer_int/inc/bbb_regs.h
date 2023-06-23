@@ -55,8 +55,11 @@
 
 /* GPIO */
 #define GPIO1_OE            					0x4804C134
+// #define GPIO2_OE            					0x481AC134
 #define GPIO1_SETDATAOUT   				 		0x4804C194
+#define GPIO2_SETDATAOUT   				 		0x480AC194
 #define GPIO1_CLEARDATAOUT  					0x4804C190
+#define GPIO2_CLEARDATAOUT  					0x480AC190
 
 
 /* The Input clock is selected as 24MHz. So for 1ms set the count to 0x5DC0. 

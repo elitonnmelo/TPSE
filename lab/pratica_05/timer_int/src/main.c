@@ -18,6 +18,7 @@
 
 #include "bbb_regs.h"
 #include "hw_types.h"
+#include "interrupt.h"
 
 /**
  * \brief   This macro will check for write POSTED status
@@ -164,19 +165,16 @@ void delay(unsigned int mSec){
 
 /* 
  * ===  FUNCTION  ======================================================================
- *         Name:  timerSetup
+ *         Name:  delay
  *  Description:  
  * =====================================================================================
  */
-void timerSetup(void){
-     /*  Clock enable for DMTIMER7 TRM 8.1.12.1.25 */
-    HWREG(CM_PER_TIMER7_CLKCTRL) |= 0x2;
+void Delay(unsigned int mSec) {
 
-	/*  Check clock enable for DMTIMER7 TRM 8.1.12.1.25 */    
-    while((HWREG(CM_PER_TIMER7_CLKCTRL) & 0x3) != 0x2);
-
-    /* Interrupt mask */
-    HWREG(INTC_MIR_CLEAR2) |= (1<<31);//(95 --> Bit 31 do 3º registrador (MIR CLEAR2))
+    for(int i = 0; i < mSec; i++){
+		//loop polling
+	}
+	
 }
 
 /* 
@@ -215,43 +213,6 @@ void ledOn(void){
 
 /* 
  * ===  FUNCTION  ======================================================================
- *         Name:  timerIrqHandler
- *  Description:  
- * =====================================================================================
- */
-void timerIrqHandler(void){
-
-    /* Clear the status of the interrupt flags */
-	HWREG(DMTIMER_IRQSTATUS) = 0x2; 
-
-	flag_timer = true;
-
-    /* Stop the DMTimer */
-	timerDisable();
-
-	//Pisca o led
-	//((flag_timer++ & 0x1) ? ledOn() : ledOff());
-}
-
-/* 
- * ===  FUNCTION  ======================================================================
- *         Name:  ISR_Handler
- *  Description:  
- * =====================================================================================
- */
-void ISR_Handler(void){
-	/* Verifica se é interrupção do RTC */
-	unsigned int irq_number = HWREG(INTC_SIR_IRQ) & 0x7f;
-	
-	if(irq_number == 95)
-		timerIrqHandler();
-    
-	/* Reconhece a IRQ */
-	HWREG(INTC_CONTROL) = 0x1;
-}
-
-/* 
- * ===  FUNCTION  ======================================================================
  *         Name:  main
  *  Description:  
  * =====================================================================================
@@ -264,14 +225,35 @@ int main(void){
 	timerSetup();
 	disableWdt();
 
-	putString("Timer Interrupt: ",17);
+	putString("Digite P para polling ou I para interrupcao: ", 46);
+	char value[2];
+	getString(value, 2);
 
-	while(count){
-		putCh(0x30+count);
-		putCh(' ');
-		delay(1000);
-		count--;
+	if ( value[0] == "I" || value[0] == "i") {
+		/*Inicializando via interrupcao*/
+		while(count){
+			putCh(0x30+count);
+			putCh(' ');
+			delay(1000);
+			count--;
+		}
 	}
+	else if (value[0] == "P" || value[0] == "p") {
+		/*Inicializando via polling*/
+		while(count){
+			putCh(0x30+count);
+			putCh(' ');
+			Delay(1000);
+			count--;
+		}
+	}
+	else {
+		putString("Fail: invalid argument", 23);
+	}
+
+	// putString("Timer Interrupt: ",17);
+
+	
 	putString("...OK",5);
 
 	return(0);
