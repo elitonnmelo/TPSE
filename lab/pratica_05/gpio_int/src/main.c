@@ -24,7 +24,11 @@ bool flag_gpio;
 
 typedef enum _pinNum{
 	PIN1=1,
-	PIN2
+	PIN2,
+	PIN3,
+	PIN4,
+	PIN5,
+	PIN6
 }pinNum;
 
 
@@ -149,12 +153,22 @@ void butConfig ( ){
  */
 void ledConfig ( ){
     /*  configure pin mux for output GPIO */
+	HWREG(CM_PER_GPMCA5_REGS) |= 0x7;
+    HWREG(CM_PER_GPMCA6_REGS) |= 0x7;
     HWREG(CM_PER_GPMCA7_REGS) |= 0x7;
     HWREG(CM_PER_GPMCA8_REGS) |= 0x7;
 
+	HWREG(CM_CONF_LCD_DATA2) |= 0x7;
+    HWREG(CM_CONF_LCD_DATA2) |= 0x7;
+
     /* clear pin 23 and 24 for output, leds USR3 and USR4, TRM 25.3.4.3 */
-    HWREG(GPIO1_OE) &= ~(1<<23);
+    HWREG(GPIO1_OE) &= ~(1<<21);
+    HWREG(GPIO1_OE) &= ~(1<<22);
+	HWREG(GPIO1_OE) &= ~(1<<23);
     HWREG(GPIO1_OE) &= ~(1<<24);
+
+	HWREG(GPIO2_OE) &= ~(1<<8);
+    HWREG(GPIO2_OE) &= ~(1<<9);
 
 }/* -----  end of function ledConfig  ----- */
 
@@ -180,11 +194,23 @@ unsigned int readBut ( ){
 void ledOff(pinNum pin){
 	switch (pin) {
 		case PIN1:
-			HWREG(GPIO1_CLEARDATAOUT) |= (1<<23);
+			HWREG(GPIO1_CLEARDATAOUT) |= (1<<21);
 		break;
 		case PIN2:	
-			HWREG(GPIO1_CLEARDATAOUT) |= (1<<24);
+			HWREG(GPIO1_CLEARDATAOUT) |= (1<<22);
 		break;
+		case PIN3:
+			HWREG(GPIO1_CLEARDATAOUT) |= (1<<23);
+			break;
+		case PIN4:
+			HWREG(GPIO1_CLEARDATAOUT) |= (1<<24);
+			break;
+		case PIN5:
+			HWREG(GPIO2_CLEARDATAOUT) |= (1<<8);
+			break;
+		case PIN6:
+			HWREG(GPIO2_CLEARDATAOUT) |= (1<<9);
+			break;
 		default:
 		break;
 	}/* -----  end switch  ----- */
@@ -199,11 +225,23 @@ void ledOff(pinNum pin){
 void ledOn(pinNum pin){
 	switch (pin) {
 		case PIN1:
-			HWREG(GPIO1_SETDATAOUT) |= (1<<23);
+			HWREG(GPIO1_SETDATAOUT) |= (1<<21);
 		break;
 		case PIN2:
-			HWREG(GPIO1_SETDATAOUT) |= (1<<24);
+			HWREG(GPIO1_SETDATAOUT) |= (1<<22);
 		break;
+		case PIN3:
+			HWREG(GPIO1_SETDATAOUT) |= (1<<23);
+			break;
+		case PIN4:
+			HWREG(GPIO1_SETDATAOUT) |= (1<<24);
+			break;
+		case PIN5:
+			HWREG(GPIO2_SETDATAOUT) |= (1<<8);
+			break;
+		case PIN6:
+			HWREG(GPIO2_SETDATAOUT) |= (1<<9);
+			break;
 		default:
 		break;
 	}/* -----  end switch  ----- */
@@ -263,20 +301,68 @@ int main(void){
 		if(flag_gpio){
 			putString("button press!\n\r",15);
 			ledOn(PIN1);
+			ledOn(PIN4);
+			delay(1000);
+			ledOff(PIN1);
+			ledOff(PIN4);
+			ledOn(PIN2);
+			ledOn(PIN3);
+			delay(1000);
+			ledOff(PIN2);
+			ledOff(PIN3);
+			delay(1000);
+
+			ledOn(PIN1);
 			delay(1000);
 			ledOn(PIN2);
 			delay(1000);
+			ledOn(PIN3);
+			delay(1000);
+			ledOn(PIN4);
+			delay(1000);
+
 			ledOff(PIN1);
 			delay(1000);
 			ledOff(PIN2);
 			delay(1000);
+			ledOff(PIN3);
+			delay(1000);
+			ledOff(PIN4);
+			delay(1000);
+
+
+
+			ledOn(PIN5);
+			ledOn(PIN6);
+			delay(1000);
+			ledOff(PIN5);
+			ledOff(PIN6);
+			delay(1000);
+
+			ledOn(PIN5);
+			delay(1000);
+			ledOff(PIN5);
+			delay(1000);
+			ledOn(PIN6);
+			delay(1000);
+			ledOff(PIN6);
+			delay(1000);
+
 			flag_gpio = false;
 		}else{
 			ledOn(PIN1);
 			ledOn(PIN2);
+			ledOn(PIN3);
+			ledOn(PIN4);
+			ledOn(PIN5);
+			ledOn(PIN6);
 			delay(10000);
 			ledOff(PIN1);
 			ledOff(PIN2);
+			ledOff(PIN3);
+			ledOff(PIN4);
+			ledOff(PIN5);
+			ledOff(PIN6);
 			delay(10000);		
 		}
 	}

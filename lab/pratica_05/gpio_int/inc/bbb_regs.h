@@ -52,6 +52,11 @@
 #define SOC_CM_DPLL_CLKSEL_TIMER7_CLK           0x44E00504
 
 /* pin name */
+#define CM_CONF_LCD_DATA2                       0x44E108A8
+#define CM_CONF_LCD_DATA3                       0x44E108AC
+
+#define CM_PER_GPMCA5_REGS                      0x44E10854
+#define CM_PER_GPMCA6_REGS                      0x44E10868
 #define CM_PER_GPMCA7_REGS                      0x44E1085C
 #define CM_PER_GPMCA8_REGS                      0x44E10860
 #define CM_PER_GPMCAD12_REGS                    0x44E10830
@@ -64,10 +69,14 @@
 #define GPIO1_IRQSTATUS_SET_0  					0x4804C034
 #define GPIO1_IRQSTATUS_SET_1  					0x4804C038
 #define GPIO1_OE            					0x4804C134
+#define GPIO2_OE            					0x481AC134
 #define GPIO1_DATAIN  							0x4804C138
 #define GPIO1_RISINGDETECT  					0x4804C148
 #define GPIO1_CLEARDATAOUT  					0x4804C190
 #define GPIO1_SETDATAOUT   				 		0x4804C194
+#define GPIO2_SETDATAOUT   				 		0x480AC194
+#define GPIO2_CLEARDATAOUT  					0x480AC190
+
 
 
 /* The Input clock is selected as 24MHz. So for 1ms set the count to 0x5DC0. 
