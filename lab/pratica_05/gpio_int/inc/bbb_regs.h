@@ -46,6 +46,7 @@
 
 /* Clock */
 #define CM_PER_GPIO1_CLKCTRL                    0x44E000AC
+#define CM_PER_GPIO2_CLKCTRL                    0x44E000B0
 #define CM_PER_RTC_RTC_CLKCTRL                  0x44E00800
 #define CM_PER_RTC_CLKSTCTRL                    0x44E00804
 #define CM_PER_TIMER7_CLKCTRL                   0x44E0007C
@@ -74,8 +75,8 @@
 #define GPIO1_RISINGDETECT  					0x4804C148
 #define GPIO1_CLEARDATAOUT  					0x4804C190
 #define GPIO1_SETDATAOUT   				 		0x4804C194
-#define GPIO2_SETDATAOUT   				 		0x480AC194
-#define GPIO2_CLEARDATAOUT  					0x480AC190
+#define GPIO2_SETDATAOUT   				 		0x481AC194
+#define GPIO2_CLEARDATAOUT  					0x481AC190
 
 
 

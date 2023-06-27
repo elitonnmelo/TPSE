@@ -18,9 +18,8 @@
 
 #include "bbb_regs.h"
 #include "hw_types.h"
+#include "interrupt.h"
 
-
-bool flag_gpio;
 
 typedef enum _pinNum{
 	PIN1=1,
@@ -30,6 +29,8 @@ typedef enum _pinNum{
 	PIN5,
 	PIN6
 }pinNum;
+
+bool flag_gpio;
 
 
 /* 
@@ -111,47 +112,11 @@ int getString(char *buf, unsigned int length){
 
 /* 
  * ===  FUNCTION  ======================================================================
- *         Name:  gpioSetup
- *  Description:  
- * =====================================================================================
- */
-void gpioSetup(){
-	/* set clock for GPIO1, TRM 8.1.12.1.31 */
-	HWREG(CM_PER_GPIO1_CLKCTRL) = 0x40002;
-
-    /* Interrupt mask */
-    HWREG(INTC_MIR_CLEAR3) |= (1<<2);//(98 --> Bit 2 do 4º registrador (MIR CLEAR3))
-}
-
-/* 
- * ===  FUNCTION  ======================================================================
- *         Name:  butConfig
- *  Description:  
- * =====================================================================================
- */
-void butConfig ( ){
-    /* configure pin 28 mux for input GPIO */
-    HWREG(CM_PER_GPMCBEn1_REGS) |= 0x2F;
-	
-    /* clear pin 28 for input, led USR0, TRM 25.3.4.3 */
-    HWREG(GPIO1_OE) |= 1<<28;
-	
-	flag_gpio = false;
-
-    /* Setting interrupt GPIO pin. */
-	HWREG(GPIO1_IRQSTATUS_SET_0) |= 1<<28; 	
-
-  	/* Enable interrupt generation on detection of a rising edge.*/
-	HWREG(GPIO1_RISINGDETECT) |= 1<<28;	
-}/* -----  end of function butConfig  ----- */
-
-/* 
- * ===  FUNCTION  ======================================================================
  *         Name:  ledConfig
  *  Description:  
  * =====================================================================================
  */
-void ledConfig ( ){
+void ledConfig(){
     /*  configure pin mux for output GPIO */
 	HWREG(CM_PER_GPMCA5_REGS) |= 0x7;
     HWREG(CM_PER_GPMCA6_REGS) |= 0x7;
@@ -159,7 +124,7 @@ void ledConfig ( ){
     HWREG(CM_PER_GPMCA8_REGS) |= 0x7;
 
 	HWREG(CM_CONF_LCD_DATA2) |= 0x7;
-    HWREG(CM_CONF_LCD_DATA2) |= 0x7;
+    HWREG(CM_CONF_LCD_DATA3) |= 0x7;
 
     /* clear pin 23 and 24 for output, leds USR3 and USR4, TRM 25.3.4.3 */
     HWREG(GPIO1_OE) &= ~(1<<21);
@@ -180,7 +145,7 @@ void ledConfig ( ){
  */
 unsigned int readBut ( ){
 	unsigned int temp;
-	temp = HWREG(GPIO1_DATAIN)&0x1000;
+	temp = HWREG(GPIO1_DATAIN)&0x10000000;
 	
 	return(temp);
 }/* -----  end of function readBut  ----- */
@@ -247,36 +212,6 @@ void ledOn(pinNum pin){
 	}/* -----  end switch  ----- */
 }
 
-/* 
- * ===  FUNCTION  ======================================================================
- *         Name:  gpioIsrHandler
- *  Description:  
- * =====================================================================================
- */
-void gpioIsrHandler(void){
-
-    /* Clear the status of the interrupt flags */
-	HWREG(GPIO1_IRQSTATUS_0) = 0x10000000; 
-
-	flag_gpio = true;
-}
-
-/* 
- * ===  FUNCTION  ======================================================================
- *         Name:  ISR_Handler
- *  Description:  
- * =====================================================================================
- */
-void ISR_Handler(void){
-	/* Verify active IRQ number */
-	unsigned int irq_number = HWREG(INTC_SIR_IRQ) & 0x7f;
-	
-	if(irq_number == 98)
-		gpioIsrHandler();
-    
-	/* acknowledge IRQ */
-	HWREG(INTC_CONTROL) = 0x1;
-}
 
 /* 
  * ===  FUNCTION  ======================================================================
@@ -295,58 +230,58 @@ int main(void){
 	putString("gpio Interrupt...\n\r",19);
 	ledOff(PIN1);
 	ledOff(PIN2);
-	delay(10000);
+	delay(10000000);
 
 	while(true){
 		if(flag_gpio){
 			putString("button press!\n\r",15);
 			ledOn(PIN1);
 			ledOn(PIN4);
-			delay(1000);
+			delay(10000000);
 			ledOff(PIN1);
 			ledOff(PIN4);
 			ledOn(PIN2);
 			ledOn(PIN3);
-			delay(1000);
+			delay(10000000);
 			ledOff(PIN2);
 			ledOff(PIN3);
-			delay(1000);
+			delay(10000000);
 
 			ledOn(PIN1);
-			delay(1000);
+			delay(10000000);
 			ledOn(PIN2);
-			delay(1000);
+			delay(10000000);
 			ledOn(PIN3);
-			delay(1000);
+			delay(10000000);
 			ledOn(PIN4);
-			delay(1000);
+			delay(10000000);
 
 			ledOff(PIN1);
-			delay(1000);
+			delay(10000000);
 			ledOff(PIN2);
-			delay(1000);
+			delay(10000000);
 			ledOff(PIN3);
-			delay(1000);
+			delay(10000000);
 			ledOff(PIN4);
-			delay(1000);
+			delay(10000000);
 
 
 
 			ledOn(PIN5);
 			ledOn(PIN6);
-			delay(1000);
+			delay(10000000);
 			ledOff(PIN5);
 			ledOff(PIN6);
-			delay(1000);
+			delay(10000000);
 
 			ledOn(PIN5);
-			delay(1000);
+			delay(10000000);
 			ledOff(PIN5);
-			delay(1000);
+			delay(10000000);
 			ledOn(PIN6);
-			delay(1000);
+			delay(10000000);
 			ledOff(PIN6);
-			delay(1000);
+			delay(10000000);
 
 			flag_gpio = false;
 		}else{
@@ -356,14 +291,14 @@ int main(void){
 			ledOn(PIN4);
 			ledOn(PIN5);
 			ledOn(PIN6);
-			delay(10000);
+			delay(10000000);
 			ledOff(PIN1);
 			ledOff(PIN2);
 			ledOff(PIN3);
 			ledOff(PIN4);
 			ledOff(PIN5);
 			ledOff(PIN6);
-			delay(10000);		
+			delay(10000000);		
 		}
 	}
 
