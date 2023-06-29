@@ -19,6 +19,8 @@
 #include "bbb_regs.h"
 #include "hw_types.h"
 #include "interrupt.h"
+#include "timer.h"
+
 
 /**
  * \brief   This macro will check for write POSTED status
@@ -33,12 +35,19 @@
  *    DMTIMER_WRITE_POST_TMAR - Timer Match register \n
  *
  **/
-#define DMTimerWaitForWrite(reg)   \
-            if(HWREG(DMTIMER_TSICR) & 0x4)\
-            while((reg & HWREG(DMTIMER_TWPS)));
 
 
-int flag_timer = false;
+typedef enum _pinNum{
+	PIN1=1,
+	PIN2,
+	PIN3,
+	PIN4,
+	PIN5,
+	PIN6
+}pinNum;
+
+
+bool flag_timer;
 
 /* 
  * ===  FUNCTION  ======================================================================
@@ -107,89 +116,42 @@ int getString(char *buf, unsigned int length){
 
 /* 
  * ===  FUNCTION  ======================================================================
- *         Name:  timerEnable
- *  Description:  
- * =====================================================================================
- */
-void timerEnable(){
-    /* Wait for previous write to complete in TCLR */
-	DMTimerWaitForWrite(0x1);
-
-    /* Start the timer */
-    HWREG(DMTIMER_TCLR) |= 0x1;
-}/* -----  end of function timerEnable  ----- */
-
-/* 
- * ===  FUNCTION  ======================================================================
- *         Name:  timerDisable
- *  Description:  
- * =====================================================================================
- */
-void timerDisable(){
-    /* Wait for previous write to complete in TCLR */
-	DMTimerWaitForWrite(0x1);
-
-    /* Stop the timer */
-    HWREG(DMTIMER_TCLR) &= ~(0x1);
-}/* -----  end of function timerEnable  ----- */
-
-/* 
- * ===  FUNCTION  ======================================================================
- *         Name:  delay
- *  Description:  
- * =====================================================================================
- */
-void delay(unsigned int mSec){
-
-    unsigned int countVal = TIMER_OVERFLOW - (mSec * TIMER_1MS_COUNT);
-
-   	/* Wait for previous write to complete */
-	DMTimerWaitForWrite(0x2);
-
-    /* Load the register with the re-load value */
-	HWREG(DMTIMER_TCRR) = countVal;
-	
-	flag_timer = false;
-
-    /* Enable the DMTimer interrupts */
-	HWREG(DMTIMER_IRQENABLE_SET) = 0x2; 
-
-    /* Start the DMTimer */
-	timerEnable();
-
-    while(flag_timer == false);
-
-    /* Disable the DMTimer interrupts */
-	HWREG(DMTIMER_IRQENABLE_CLR) = 0x2; 
-}
-
-/* 
- * ===  FUNCTION  ======================================================================
- *         Name:  delay
- *  Description:  
- * =====================================================================================
- */
-void Delay(unsigned int mSec) {
-
-    for(int i = 0; i < mSec; i++){
-		//loop polling
-	}
-	
-}
-
-/* 
- * ===  FUNCTION  ======================================================================
  *         Name:  gpioSetup
  *  Description:  
  * =====================================================================================
  */
-void gpioSetup(){
-  /* set clock for GPIO1, TRM 8.1.12.1.31 */
-  HWREG(CM_PER_GPIO1_CLKCTRL) = 0x40002;
+// void gpioSetup(){
+//   /* set clock for GPIO1, TRM 8.1.12.1.31 */
+//   HWREG(CM_PER_GPIO1_CLKCTRL) = 0x40002;
+// }
 
-  /* clear pin 21 for output, led USR0, TRM 25.3.4.3 */
-  HWREG(GPIO1_OE) &= ~(1<<21);
-}
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  ledConfig
+ *  Description:  
+ * =====================================================================================
+ */
+void ledConfig(){
+    /*  configure pin mux for output GPIO */
+	HWREG(CM_PER_GPMCA5_REGS) |= 0x7;
+    HWREG(CM_PER_GPMCA6_REGS) |= 0x7;
+    HWREG(CM_PER_GPMCA7_REGS) |= 0x7;
+    HWREG(CM_PER_GPMCA8_REGS) |= 0x7;
+
+	HWREG(CM_CONF_LCD_DATA2) |= 0x7;
+    HWREG(CM_CONF_LCD_DATA3) |= 0x7;
+
+    /* clear pin 23 and 24 for output, leds USR3 and USR4, TRM 25.3.4.3 */
+    HWREG(GPIO1_OE) &= ~(1<<21);
+    HWREG(GPIO1_OE) &= ~(1<<22);
+	HWREG(GPIO1_OE) &= ~(1<<23);
+    HWREG(GPIO1_OE) &= ~(1<<24);
+
+	HWREG(GPIO2_OE) &= ~(1<<8);
+    HWREG(GPIO2_OE) &= ~(1<<9);
+
+}/* -----  end of function ledConfig  ----- */
+
 
 /* 
  * ===  FUNCTION  ======================================================================
@@ -197,8 +159,29 @@ void gpioSetup(){
  *  Description:  
  * =====================================================================================
  */
-void ledOff(void){
-  HWREG(GPIO1_CLEARDATAOUT) = (1<<21);
+void ledOff(pinNum pin){
+	switch (pin) {
+		case PIN1:
+			HWREG(GPIO1_CLEARDATAOUT) |= (1<<21);
+		break;
+		case PIN2:	
+			HWREG(GPIO1_CLEARDATAOUT) |= (1<<22);
+		break;
+		case PIN3:
+			HWREG(GPIO1_CLEARDATAOUT) |= (1<<23);
+			break;
+		case PIN4:
+			HWREG(GPIO1_CLEARDATAOUT) |= (1<<24);
+			break;
+		case PIN5:
+			HWREG(GPIO2_CLEARDATAOUT) |= (1<<8);
+			break;
+		case PIN6:
+			HWREG(GPIO2_CLEARDATAOUT) |= (1<<9);
+			break;
+		default:
+		break;
+	}/* -----  end switch  ----- */
 }
 
 /* 
@@ -207,8 +190,29 @@ void ledOff(void){
  *  Description:  
  * =====================================================================================
  */
-void ledOn(void){
-  HWREG(GPIO1_SETDATAOUT) = (1<<21);
+void ledOn(pinNum pin){
+	switch (pin) {
+		case PIN1:
+			HWREG(GPIO1_SETDATAOUT) |= (1<<21);
+		break;
+		case PIN2:
+			HWREG(GPIO1_SETDATAOUT) |= (1<<22);
+		break;
+		case PIN3:
+			HWREG(GPIO1_SETDATAOUT) |= (1<<23);
+			break;
+		case PIN4:
+			HWREG(GPIO1_SETDATAOUT) |= (1<<24);
+			break;
+		case PIN5:
+			HWREG(GPIO2_SETDATAOUT) |= (1<<8);
+			break;
+		case PIN6:
+			HWREG(GPIO2_SETDATAOUT) |= (1<<9);
+			break;
+		default:
+		break;
+	}/* -----  end switch  ----- */
 }
 
 /* 
@@ -222,42 +226,147 @@ int main(void){
 	
 	/* Hardware setup */
 	gpioSetup();
+	ledConfig();
 	timerSetup();
+	butConfig();
 	disableWdt();
 
-	putString("Digite P para polling ou I para interrupcao: ", 46);
-	char value[2];
-	getString(value, 2);
+	// putString("Digite P para polling ou I para interrupcao: ", 45);
+	// char value[2];
+	// getString(value, 2);
 
-	if ( value[0] == "I" || value[0] == "i") {
-		/*Inicializando via interrupcao*/
-		while(count){
-			putCh(0x30+count);
-			putCh(' ');
-			delay(1000);
-			count--;
-		}
-	}
-	else if (value[0] == "P" || value[0] == "p") {
-		/*Inicializando via polling*/
-		while(count){
-			putCh(0x30+count);
-			putCh(' ');
-			Delay(1000);
-			count--;
-		}
-	}
-	else {
-		putString("Fail: invalid argument", 23);
-	}
+	// if ( value[0] == "I" || value[0] == "i") {
+	// 	putString("Inicializando via interrupcao", 29);
+	// 	while(count){
+	// 		putString("Dentro do while interrupcao", 28);
+	// 		putCh(0x30+count);
+	// 		putCh(' ');
+	// 		delay(1000);
+	// 		count--;
+	// 	}
+	// }
+	// else if (value[0] == "P" || value[0] == "p") {
+	// 	putString("Inicializando via polling", 25);
+	// 	while(count){
+	// 		putString("Dentro do while polling", 14);
+	// 		putCh(0x30+count);
+	// 		putCh(' ');
+	// 		Delay(1000);
+	// 		count--;
+	// 	}
+	// }
+	// else {
+	// 	putString("Fail: invalid argument", 22);
+	// }
 
 	// putString("Timer Interrupt: ",17);
+	// while(count){
+	// 	putCh(0x30+count);
+	// 	putCh(' ');
+	// 	delay(1000);
+	// 	//count--;
+
+	// 	ledOn(PIN1);
+	// 	ledOn(PIN2);
+	// 	ledOn(PIN3);
+	// 	ledOn(PIN4);
+	// 	ledOn(PIN5);
+	// 	ledOn(PIN6);
+	// 	putString("HIGH\n\r", 6);
+	// 	delay(1000);
+	// 	ledOff(PIN1);
+	// 	ledOff(PIN2);
+	// 	ledOff(PIN3);
+	// 	ledOff(PIN4);
+	// 	ledOff(PIN5);
+	// 	ledOff(PIN6);
+	// 	putString("LOW\n\r", 5);
+	// 	delay(1000);
+	// 	count--;
+		
+	// }
+
+	while(true){
+		if(flag_gpio){
+			putString("button press!\n\r",15);
+			ledOn(PIN1);
+			ledOn(PIN4);
+			delay(1000);
+			ledOff(PIN1);
+			ledOff(PIN4);
+			ledOn(PIN2);
+			ledOn(PIN3);
+			delay(1000);
+			ledOff(PIN2);
+			ledOff(PIN3);
+			delay(1000);
+
+			ledOn(PIN1);
+			delay(1000);
+			ledOn(PIN2);
+			delay(1000);
+			ledOn(PIN3);
+			delay(1000);
+			ledOn(PIN4);
+			delay(1000);
+
+			ledOff(PIN1);
+			delay(1000);
+			ledOff(PIN2);
+			delay(1000);
+			ledOff(PIN3);
+			delay(1000);
+			ledOff(PIN4);
+			delay(1000);
+
+
+
+			ledOn(PIN5);
+			ledOn(PIN6);
+			delay(1000);
+			ledOff(PIN5);
+			ledOff(PIN6);
+			delay(1000);
+
+			ledOn(PIN5);
+			delay(1000);
+			ledOff(PIN5);
+			delay(1000);
+			ledOn(PIN6);
+			delay(1000);
+			ledOff(PIN6);
+			delay(1000);
+
+			flag_gpio = false;
+		}else{
+			ledOn(PIN1);
+			ledOn(PIN2);
+			ledOn(PIN3);
+			ledOn(PIN4);
+			ledOn(PIN5);
+			ledOn(PIN6);
+			delay(1000);
+			ledOff(PIN1);
+			ledOff(PIN2);
+			ledOff(PIN3);
+			ledOff(PIN4);
+			ledOff(PIN5);
+			ledOff(PIN6);
+			delay(1000);		
+		}
+	}
 
 	
 	putString("...OK",5);
 
 	return(0);
 }
+/**
+ * COMPILE AND RUN [minicom]
+ * setenv app "setenv autoload no; setenv serverip 10.4.1.1; setenv ipaddr 10.4.1.2; tftp 0x80000000 /tfptboot/appTimer.bin; go 0x80000000;"
+ * run app
+**/
+
 
 
 
