@@ -158,11 +158,6 @@ void DMTimerSetUp(void){
 
     while((HWREG(SOC_CM_PER_REGS + CM_PER_TIMER7_CLKCTRL) &
     CM_PER_TIMER7_CLKCTRL_MODULEMODE) != CM_PER_TIMER7_CLKCTRL_MODULEMODE_ENABLE){};
-
-    #ifdef INTERRUPT
-        /* Interrupt mask */
-        HWREG(INTC_BASE + INTC_MIR_CLEAR2) |= (1<<31);//(95 --> Bit 31 do 3º registrador (MIR CLEAR2))
-    #endif
 }
 
 void timerIrqHandler(void){

@@ -346,8 +346,4 @@ void butConfig ( ){
 	HWREG(SOC_GPIO_1_REGS + GPIO_RISINGDETECT) |= 1<<28;	
 }/* -----  end of function butConfig  ----- */
 
-void mirClear ( ){
-	/* Interrupt mask */
-    HWREG(INTC_BASE + INTC_MIR_CLEAR3) |= (1<<2);//(98 --> Bit 2 do 4º registrador (MIR CLEAR3))
-}
 #endif

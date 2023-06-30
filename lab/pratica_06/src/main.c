@@ -23,6 +23,7 @@
 
 #define INTERRUPT
 
+
 bool flag_gpio;
 bool flag_timer;
 
@@ -47,7 +48,8 @@ int main(void){
 		gpioPinMuxSetup(GPIO2, i);
 	}
 	#ifdef INTERRUPT
-		mirClear();
+		mirClear(95);
+		mirClear(98);
 		butConfig();
 	#endif
 	DMTimerSetUp();
