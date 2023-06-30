@@ -222,3 +222,15 @@ void delay(unsigned int mSec){
 
 #endif
 
+ /* ===  FUNCTION  ======================================================================
+ *         Name:  disableWdt
+ *  Description:  
+ * =====================================================================================
+ */
+void disableWdt(void){
+	HWREG(WDT_BASE + WDT_WSPR) = 0xAAAA;
+	while((HWREG(WDT_BASE + WDT_WWPS) & (1<<4)));
+	
+	HWREG(WDT_BASE + WDT_WSPR) = 0x5555;
+	while((HWREG(WDT_BASE + WDT_WWPS) & (1<<4)));
+}

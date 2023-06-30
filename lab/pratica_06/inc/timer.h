@@ -23,11 +23,17 @@
 #include "clock_module.h"
 #include "control_module.h"
 #include "interrupt.h"
+#include "gpio.h"
 
 
 /*************************************************************************\
  * Registers Definition
 \*************************************************************************/
+
+
+#define  WDT_BASE 								0x44E35000
+#define  WDT_WSPR 								0x48
+#define  WDT_WWPS 								0x34
 
 #define DMTIMER_TIDR   (0x0)
 #define DMTIMER_TIOCP_CFG   (0x10)
@@ -495,5 +501,6 @@ void DMTimerDisable(unsigned int );
 void DMTimerSetUp(void );
 void delay(unsigned int );
 void timerIrqHandler(void);
+void disableWdt(void);
 
 #endif //TIMER_H_

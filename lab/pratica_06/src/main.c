@@ -21,33 +21,6 @@
 #include "gpio.h"
 #include "interrupt.h"
 
-#define  WDT_BASE 								0x44E35000
-#define  WDT_WSPR 								0x48
-#define  WDT_WWPS 								0x34
-
-// typedef enum _pinNum{
-// 	21=21,
-// 	22,
-// 	23,
-// 	24,
-// 	8 = 8,
-// 	9
-// }pinNum;
-
-
- /* ===  FUNCTION  ======================================================================
- *         Name:  disableWdt
- *  Description:  
- * =====================================================================================
- */
-void disableWdt(void){
-	HWREG(WDT_BASE + WDT_WSPR) = 0xAAAA;
-	while((HWREG(WDT_BASE + WDT_WWPS) & (1<<4)));
-	
-	HWREG(WDT_BASE + WDT_WSPR) = 0x5555;
-	while((HWREG(WDT_BASE + WDT_WWPS) & (1<<4)));
-}
-
 #define INTERRUPT
 
 bool flag_gpio;
@@ -121,7 +94,7 @@ int main(void){
 			flag_gpio = false;
 		}
 		else{
-			uartPutString(UART0, "button not press!\n\r", 19);
+			//uartPutString(UART0, "button not press!\n\r", 19);
 			gpioSetPinValue(GPIO1, 21, HIGH);
 			gpioSetPinValue(GPIO1, 22, HIGH);
 			gpioSetPinValue(GPIO1, 23, HIGH);

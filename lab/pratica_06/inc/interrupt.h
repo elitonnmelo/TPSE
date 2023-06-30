@@ -5,6 +5,7 @@
 #include "hw_types.h"  
 #include "gpio.h"
 #include "timer.h"
+#include "uart.h"
 
 #define INTC_BASE       						0x48200000
 #define INTC_SIR_IRQ    						0x40
