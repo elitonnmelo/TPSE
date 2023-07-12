@@ -143,7 +143,7 @@ int main(void){
 		ledToggle2();
 		ledToggle3();
 		ledToggle4();
-		
+		delay(5);
 
 		// Pinos fora da Baglebone
 		// Piscar os dois leds juntos
