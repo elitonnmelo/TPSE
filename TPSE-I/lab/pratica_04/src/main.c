@@ -143,7 +143,6 @@ int main(void){
 		ledToggle2();
 		ledToggle3();
 		ledToggle4();
-		delay(5);
 
 		// Pinos fora da Baglebone
 		// Piscar os dois leds juntos
@@ -151,9 +150,9 @@ int main(void){
 		ledToggle6();
 		Delay(5);
 		
-		// Delay: 10 ms
+		// Delay: 5 ms
 		// Frequencia: 100 Hz
-		// Periodo: 2 delay
+		// Periodo: 2 delay = 2 * 5 ms = 10 ms
 		
 		/*
 		Formula:   	delay = 1000/ (2 * frequencia)

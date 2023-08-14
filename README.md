@@ -1,6 +1,6 @@
 # Técnicas para Programação de Sistemas Embarcados
 
-Este repositório contém as práticas realizadas na disciplina de Técnicas para Programação de Sistemas Embarcados utilizando a placa BeagleBone Black. O objetivo desta disciplina é proporcionar aos estudantes conhecimentos e habilidades necessárias para programar sistemas embarcados, que são dispositivos eletrônicos com capacidade de processamento e interação com o ambiente.
+Este repositório contém as práticas realizadas na disciplina de Técnicas para Programação de Sistemas Embarcados I e II utilizando a placa BeagleBone Black. O objetivo desta disciplina é proporcionar aos estudantes conhecimentos e habilidades necessárias para programar sistemas embarcados, que são dispositivos eletrônicos com capacidade de processamento e interação com o ambiente.
 
 ## Práticas
 
