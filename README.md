@@ -12,7 +12,7 @@ As práticas abrangem os seguintes tópicos:
 2. Timer: utilização de temporizadores para controle de eventos e tarefas periódicas na BeagleBone Black.
 3. Interrupção: implementação de rotinas de interrupção para lidar com eventos assíncronos na BeagleBone Black.
 
-## Projeto Final
+## Projeto Final TPSE - I
 
 Além das práticas individuais, este repositório também contém o projeto final da disciplina, que é desenvolvido utilizando a placa BeagleBone Black. O projeto final é uma atividade mais abrangente que engloba os conceitos e técnicas aprendidos ao longo do curso.
 
