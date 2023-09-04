@@ -1,3 +1,13 @@
 crosstool-ng
 /crosstool-ng
 **/crosstool-ng
+
+kernel-linux
+/kernel-linux
+*/kernel-linux
+**/kernel-linux
+
+linux
+/linux
+*/linux
+**/linux
