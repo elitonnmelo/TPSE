@@ -1,7 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
-obj-y += am437x/
+# SPDX-License-Identifier: GPL-2.0
 obj-y += cal/
 obj-y += vpe/
-obj-y += davinci/
-obj-y += omap/
-obj-y += omap3isp/
+obj-y += j721e-csi2rx/

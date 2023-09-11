@@ -16,7 +16,7 @@
 do {									\
 	unsigned int loops = FUTEX_MAX_LOOPS;				\
 									\
-	uaccess_enable_privileged();					\
+	uaccess_enable();						\
 	asm volatile(							\
 "	prfm	pstl1strm, %2\n"					\
 "1:	ldxr	%w1, %2\n"						\
@@ -25,16 +25,21 @@ do {									\
 "	cbz	%w0, 3f\n"						\
 "	sub	%w4, %w4, %w0\n"					\
 "	cbnz	%w4, 1b\n"						\
-"	mov	%w0, %w6\n"						\
+"	mov	%w0, %w7\n"						\
 "3:\n"									\
 "	dmb	ish\n"							\
-	_ASM_EXTABLE_UACCESS_ERR(1b, 3b, %w0)				\
-	_ASM_EXTABLE_UACCESS_ERR(2b, 3b, %w0)				\
+"	.pushsection .fixup,\"ax\"\n"					\
+"	.align	2\n"							\
+"4:	mov	%w0, %w6\n"						\
+"	b	3b\n"							\
+"	.popsection\n"							\
+	_ASM_EXTABLE(1b, 4b)						\
+	_ASM_EXTABLE(2b, 4b)						\
 	: "=&r" (ret), "=&r" (oldval), "+Q" (*uaddr), "=&r" (tmp),	\
 	  "+r" (loops)							\
-	: "r" (oparg), "Ir" (-EAGAIN)					\
+	: "r" (oparg), "Ir" (-EFAULT), "Ir" (-EAGAIN)			\
 	: "memory");							\
-	uaccess_disable_privileged();					\
+	uaccess_disable();						\
 } while (0)
 
 static inline int
@@ -90,7 +95,7 @@ futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *_uaddr,
 		return -EFAULT;
 
 	uaddr = __uaccess_mask_ptr(_uaddr);
-	uaccess_enable_privileged();
+	uaccess_enable();
 	asm volatile("// futex_atomic_cmpxchg_inatomic\n"
 "	prfm	pstl1strm, %2\n"
 "1:	ldxr	%w1, %2\n"
@@ -100,16 +105,20 @@ futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *_uaddr,
 "	cbz	%w3, 3f\n"
 "	sub	%w4, %w4, %w3\n"
 "	cbnz	%w4, 1b\n"
-"	mov	%w0, %w7\n"
+"	mov	%w0, %w8\n"
 "3:\n"
 "	dmb	ish\n"
 "4:\n"
-	_ASM_EXTABLE_UACCESS_ERR(1b, 4b, %w0)
-	_ASM_EXTABLE_UACCESS_ERR(2b, 4b, %w0)
+"	.pushsection .fixup,\"ax\"\n"
+"5:	mov	%w0, %w7\n"
+"	b	4b\n"
+"	.popsection\n"
+	_ASM_EXTABLE(1b, 5b)
+	_ASM_EXTABLE(2b, 5b)
 	: "+r" (ret), "=&r" (val), "+Q" (*uaddr), "=&r" (tmp), "+r" (loops)
-	: "r" (oldval), "r" (newval), "Ir" (-EAGAIN)
+	: "r" (oldval), "r" (newval), "Ir" (-EFAULT), "Ir" (-EAGAIN)
 	: "memory");
-	uaccess_disable_privileged();
+	uaccess_disable();
 
 	if (!ret)
 		*uval = val;

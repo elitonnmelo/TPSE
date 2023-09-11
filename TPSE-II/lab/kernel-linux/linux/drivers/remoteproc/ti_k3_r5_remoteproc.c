@@ -2,7 +2,7 @@
 /*
  * TI K3 R5F (MCU) Remote Processor driver
  *
- * Copyright (C) 2017-2022 Texas Instruments Incorporated - https://www.ti.com/
+ * Copyright (C) 2017-2020 Texas Instruments Incorporated - https://www.ti.com/
  *	Suman Anna <s-anna@ti.com>
  */
 
@@ -71,16 +71,16 @@ struct k3_r5_mem {
 /*
  * All cluster mode values are not applicable on all SoCs. The following
  * are the modes supported on various SoCs:
- *   Split mode       : AM65x, J721E, J7200 and AM64x SoCs
- *   LockStep mode    : AM65x, J721E and J7200 SoCs
- *   Single-CPU mode  : AM64x SoCs only
- *   Single-Core mode : AM62x, AM62A SoCs
+ *   Split mode      : AM65x, J721E, J7200 and AM64x SoCs
+ *   LockStep mode   : AM65x, J721E and J7200 SoCs
+ *   Single-CPU mode : AM64x SoCs only
+ *   None            : AM62x SoCs only
  */
 enum cluster_mode {
 	CLUSTER_MODE_SPLIT = 0,
 	CLUSTER_MODE_LOCKSTEP,
 	CLUSTER_MODE_SINGLECPU,
-	CLUSTER_MODE_SINGLECORE
+	CLUSTER_MODE_NONE,
 };
 
 /**
@@ -155,6 +155,7 @@ struct k3_r5_core {
  * @core: cached pointer to r5 core structure being used
  * @rmem: reserved memory regions data
  * @num_rmems: number of reserved memory regions
+ * @ipc_only: flag to indicate IPC-only mode
  */
 struct k3_r5_rproc {
 	struct device *dev;
@@ -165,6 +166,7 @@ struct k3_r5_rproc {
 	struct k3_r5_core *core;
 	struct k3_r5_mem *rmem;
 	int num_rmems;
+	bool ipc_only;
 };
 
 /**
@@ -432,7 +434,6 @@ static int k3_r5_rproc_request_mbox(struct rproc *rproc)
  * private to each core. Only Core0 needs to be unhalted for running the
  * cluster in this mode. The function uses the same reset logic as LockStep
  * mode for this (though the behavior is agnostic of the reset release order).
- * This callback is invoked only in remoteproc mode.
  */
 static int k3_r5_rproc_prepare(struct rproc *rproc)
 {
@@ -444,6 +445,10 @@ static int k3_r5_rproc_prepare(struct rproc *rproc)
 	u64 boot_vec = 0;
 	bool mem_init_dis;
 	int ret;
+
+	/* IPC-only mode does not require the cores to be released from reset */
+	if (kproc->ipc_only)
+		return 0;
 
 	ret = ti_sci_proc_get_status(core->tsp, &boot_vec, &cfg, &ctrl, &stat);
 	if (ret < 0)
@@ -498,8 +503,7 @@ static int k3_r5_rproc_prepare(struct rproc *rproc)
  * both cores. The access is made possible only with releasing the resets for
  * both cores, but with only Core0 unhalted. This function re-uses the same
  * reset assert logic as LockStep mode for this mode (though the behavior is
- * agnostic of the reset assert order). This callback is invoked only in
- * remoteproc mode.
+ * agnostic of the reset assert order).
  */
 static int k3_r5_rproc_unprepare(struct rproc *rproc)
 {
@@ -508,6 +512,10 @@ static int k3_r5_rproc_unprepare(struct rproc *rproc)
 	struct k3_r5_core *core = kproc->core;
 	struct device *dev = kproc->dev;
 	int ret;
+
+	/* do not put back the cores into reset in IPC-only mode */
+	if (kproc->ipc_only)
+		return 0;
 
 	/* Re-use LockStep-mode reset logic for Single-CPU mode */
 	ret = (cluster->mode == CLUSTER_MODE_LOCKSTEP ||
@@ -533,8 +541,7 @@ static int k3_r5_rproc_unprepare(struct rproc *rproc)
  *
  * The Single-CPU mode on applicable SoCs (eg: AM64x) only uses Core0 to execute
  * code, so only Core0 needs to be unhalted. The function uses the same logic
- * flow as Split-mode for this. This callback is invoked only in remoteproc
- * mode.
+ * flow as Split-mode for this.
  */
 static int k3_r5_rproc_start(struct rproc *rproc)
 {
@@ -544,6 +551,12 @@ static int k3_r5_rproc_start(struct rproc *rproc)
 	struct k3_r5_core *core;
 	u32 boot_addr;
 	int ret;
+
+	if (kproc->ipc_only) {
+		dev_err(dev, "%s cannot be invoked in IPC-only mode\n",
+			__func__);
+		return -EINVAL;
+	}
 
 	ret = k3_r5_rproc_request_mbox(rproc);
 	if (ret)
@@ -605,15 +618,21 @@ put_mbox:
  * be done here, but is preferred to be done in the .unprepare() ops - this
  * maintains the symmetric behavior between the .start(), .stop(), .prepare()
  * and .unprepare() ops, and also balances them well between sysfs 'state'
- * flow and device bind/unbind or module removal. This callback is invoked
- * only in remoteproc mode.
+ * flow and device bind/unbind or module removal.
  */
 static int k3_r5_rproc_stop(struct rproc *rproc)
 {
 	struct k3_r5_rproc *kproc = rproc->priv;
 	struct k3_r5_cluster *cluster = kproc->cluster;
+	struct device *dev = kproc->dev;
 	struct k3_r5_core *core = kproc->core;
 	int ret;
+
+	if (kproc->ipc_only) {
+		dev_err(dev, "%s cannot be invoked in IPC-only mode\n",
+			__func__);
+		return -EINVAL;
+	}
 
 	/* halt all applicable cores */
 	if (cluster->mode == CLUSTER_MODE_LOCKSTEP) {
@@ -648,8 +667,7 @@ out:
  *
  * The R5F attach callback only needs to request the mailbox, the remote
  * processor is already booted, so there is no need to issue any TI-SCI
- * commands to boot the R5F cores in IPC-only mode. This callback is invoked
- * only in IPC-only mode.
+ * commands to boot the R5F cores in IPC-only mode.
  */
 static int k3_r5_rproc_attach(struct rproc *rproc)
 {
@@ -657,11 +675,16 @@ static int k3_r5_rproc_attach(struct rproc *rproc)
 	struct device *dev = kproc->dev;
 	int ret;
 
+	if (!kproc->ipc_only || rproc->state != RPROC_DETACHED) {
+		dev_err(dev, "R5F is expected to be in IPC-only mode and RPROC_DETACHED state\n");
+		return -EINVAL;
+	}
+
 	ret = k3_r5_rproc_request_mbox(rproc);
 	if (ret)
 		return ret;
 
-	dev_info(dev, "R5F core initialized in IPC-only mode\n");
+	dev_err(dev, "R5F core initialized in IPC-only mode\n");
 	return 0;
 }
 
@@ -670,16 +693,20 @@ static int k3_r5_rproc_attach(struct rproc *rproc)
  *
  * The R5F detach callback performs the opposite operation to attach callback
  * and only needs to release the mailbox, the R5F cores are not stopped and
- * will be left in booted state in IPC-only mode. This callback is invoked
- * only in IPC-only mode.
+ * will be left in booted state in IPC-only mode.
  */
 static int k3_r5_rproc_detach(struct rproc *rproc)
 {
 	struct k3_r5_rproc *kproc = rproc->priv;
 	struct device *dev = kproc->dev;
 
+	if (!kproc->ipc_only || rproc->state != RPROC_ATTACHED) {
+		dev_err(dev, "R5F is expected to be in IPC-only mode and RPROC_ATTACHED state\n");
+		return -EINVAL;
+	}
+
 	mbox_free_channel(kproc->mbox);
-	dev_info(dev, "R5F core deinitialized in IPC-only mode\n");
+	dev_err(dev, "R5F core deinitialized in IPC-only mode\n");
 	return 0;
 }
 
@@ -690,8 +717,7 @@ static int k3_r5_rproc_detach(struct rproc *rproc)
  * resource table at the base of the DDR region reserved for firmware usage.
  * This provides flexibility for the remote processor to be booted by different
  * bootloaders that may or may not have the ability to publish the resource table
- * address and size through a DT property. This callback is invoked only in
- * IPC-only mode.
+ * address and size through a DT property.
  */
 static struct resource_table *k3_r5_get_loaded_rsc_table(struct rproc *rproc,
 							 size_t *rsc_table_sz)
@@ -723,7 +749,7 @@ static struct resource_table *k3_r5_get_loaded_rsc_table(struct rproc *rproc,
  * present in a DSP or IPU device). The translated addresses can be used
  * either by the remoteproc core for loading, or by any rpmsg bus drivers.
  */
-static void *k3_r5_rproc_da_to_va(struct rproc *rproc, u64 da, size_t len, bool *is_iomem)
+static void *k3_r5_rproc_da_to_va(struct rproc *rproc, u64 da, size_t len)
 {
 	struct k3_r5_rproc *kproc = rproc->priv;
 	struct k3_r5_core *core = kproc->core;
@@ -789,8 +815,11 @@ static const struct rproc_ops k3_r5_rproc_ops = {
 	.unprepare	= k3_r5_rproc_unprepare,
 	.start		= k3_r5_rproc_start,
 	.stop		= k3_r5_rproc_stop,
+	.attach		= k3_r5_rproc_attach,
+	.detach		= k3_r5_rproc_detach,
 	.kick		= k3_r5_rproc_kick,
 	.da_to_va	= k3_r5_rproc_da_to_va,
+	.get_loaded_rsc_table = k3_r5_get_loaded_rsc_table,
 };
 
 /*
@@ -843,7 +872,7 @@ static int k3_r5_rproc_configure(struct k3_r5_rproc *kproc)
 	core0 = list_first_entry(&cluster->cores, struct k3_r5_core, elem);
 	if (cluster->mode == CLUSTER_MODE_LOCKSTEP ||
 	    cluster->mode == CLUSTER_MODE_SINGLECPU ||
-	    cluster->mode == CLUSTER_MODE_SINGLECORE) {
+		cluster->mode == CLUSTER_MODE_NONE) {
 		core = core0;
 	} else {
 		core = kproc->core;
@@ -857,34 +886,38 @@ static int k3_r5_rproc_configure(struct k3_r5_rproc *kproc)
 	dev_dbg(dev, "boot_vector = 0x%llx, cfg = 0x%x ctrl = 0x%x stat = 0x%x\n",
 		boot_vec, cfg, ctrl, stat);
 
-	single_cpu = !!(stat & PROC_BOOT_STATUS_FLAG_R5_SINGLECORE_ONLY);
-	lockstep_en = !!(stat & PROC_BOOT_STATUS_FLAG_R5_LOCKSTEP_PERMITTED);
-
-	/* Override to single CPU mode if set in status flag */
-	if (single_cpu && cluster->mode == CLUSTER_MODE_SPLIT) {
-		dev_err(cluster->dev, "split-mode not permitted, force configuring for single-cpu mode\n");
-		cluster->mode = CLUSTER_MODE_SINGLECPU;
+	/* check if only Single-CPU mode is supported on applicable SoCs */
+	if (cluster->soc_data->single_cpu_mode || cluster->soc_data->is_single_core) {
+		single_cpu =
+			!!(stat & PROC_BOOT_STATUS_FLAG_R5_SINGLECORE_ONLY);
+		if (single_cpu && cluster->mode == CLUSTER_MODE_SPLIT) {
+			dev_err(cluster->dev, "split-mode not permitted, force configuring for single-cpu mode\n");
+			cluster->mode = CLUSTER_MODE_SINGLECPU;
+		}
+		goto config;
 	}
 
-	/* Override to split mode if lockstep enable bit is not set in status flag */
+	/* check conventional LockStep vs Split mode configuration */
+	lockstep_en = !!(stat & PROC_BOOT_STATUS_FLAG_R5_LOCKSTEP_PERMITTED);
 	if (!lockstep_en && cluster->mode == CLUSTER_MODE_LOCKSTEP) {
 		dev_err(cluster->dev, "lockstep mode not permitted, force configuring for split-mode\n");
 		cluster->mode = CLUSTER_MODE_SPLIT;
 	}
 
+config:
 	/* always enable ARM mode and set boot vector to 0 */
 	boot_vec = 0x0;
 	if (core == core0) {
 		clr_cfg = PROC_BOOT_CFG_FLAG_R5_TEINIT;
-		/*
-		 * Single-CPU configuration bit can only be configured
-		 * on Core0 and system firmware will NACK any requests
-		 * with the bit configured, so program it only on
-		 * permitted cores
-		 */
-		if (cluster->mode == CLUSTER_MODE_SINGLECPU ||
-		    cluster->mode == CLUSTER_MODE_SINGLECORE) {
-			set_cfg = PROC_BOOT_CFG_FLAG_R5_SINGLE_CORE;
+		if ((cluster->soc_data->single_cpu_mode) || (cluster->soc_data->is_single_core)) {
+			/*
+			 * Single-CPU configuration bit can only be configured
+			 * on Core0 and system firmware will NACK any requests
+			 * with the bit configured, so program it only on
+			 * permitted cores
+			 */
+			if ((cluster->mode == CLUSTER_MODE_SINGLECPU) || (cluster->mode == CLUSTER_MODE_NONE))
+				set_cfg = PROC_BOOT_CFG_FLAG_R5_SINGLE_CORE;
 		} else {
 			/*
 			 * LockStep configuration bit is Read-only on Split-mode
@@ -967,7 +1000,7 @@ static int k3_r5_reserved_mem_init(struct k3_r5_rproc *kproc)
 		return -EINVAL;
 	}
 	if (num_rmems < 2) {
-		dev_err(dev, "device needs at least two memory regions to be defined, num = %d\n",
+		dev_err(dev, "device needs atleast two memory regions to be defined, num = %d\n",
 			num_rmems);
 		return -EINVAL;
 	}
@@ -1075,7 +1108,7 @@ static void k3_r5_adjust_tcm_sizes(struct k3_r5_rproc *kproc)
 
 	if (cluster->mode == CLUSTER_MODE_LOCKSTEP ||
 	    cluster->mode == CLUSTER_MODE_SINGLECPU ||
-	    cluster->mode == CLUSTER_MODE_SINGLECORE ||
+		cluster->mode == CLUSTER_MODE_NONE ||
 	    !cluster->soc_data->tcm_is_double)
 		return;
 
@@ -1110,12 +1143,12 @@ static int k3_r5_rproc_configure_mode(struct k3_r5_rproc *kproc)
 	struct k3_r5_cluster *cluster = kproc->cluster;
 	struct k3_r5_core *core = kproc->core;
 	struct device *cdev = core->dev;
-	bool r_state = false, c_state = false, lockstep_en = false, single_cpu = false;
+	bool r_state = false, c_state = false;
 	u32 ctrl = 0, cfg = 0, stat = 0, halted = 0;
 	u64 boot_vec = 0;
 	u32 atcm_enable, btcm_enable, loczrama;
 	struct k3_r5_core *core0;
-	enum cluster_mode mode = cluster->mode;
+	enum cluster_mode mode;
 	int ret;
 
 	core0 = list_first_entry(&cluster->cores, struct k3_r5_core, elem);
@@ -1149,14 +1182,15 @@ static int k3_r5_rproc_configure_mode(struct k3_r5_rproc *kproc)
 	atcm_enable = cfg & PROC_BOOT_CFG_FLAG_R5_ATCM_EN ?  1 : 0;
 	btcm_enable = cfg & PROC_BOOT_CFG_FLAG_R5_BTCM_EN ?  1 : 0;
 	loczrama = cfg & PROC_BOOT_CFG_FLAG_R5_TCM_RSTBASE ?  1 : 0;
-	single_cpu = cfg & PROC_BOOT_CFG_FLAG_R5_SINGLE_CORE ? 1 : 0;
-	lockstep_en = cfg & PROC_BOOT_CFG_FLAG_R5_LOCKSTEP ? 1 : 0;
-
-	if (single_cpu && mode != CLUSTER_MODE_SINGLECORE)
-		mode = CLUSTER_MODE_SINGLECPU;
-	if (lockstep_en)
-		mode = CLUSTER_MODE_LOCKSTEP;
-
+	if (cluster->soc_data->is_single_core) {
+		mode = CLUSTER_MODE_NONE;
+	} else if (cluster->soc_data->single_cpu_mode) {
+		mode = cfg & PROC_BOOT_CFG_FLAG_R5_SINGLE_CORE ?
+				CLUSTER_MODE_SINGLECPU : CLUSTER_MODE_SPLIT;
+	} else {
+		mode = cfg & PROC_BOOT_CFG_FLAG_R5_LOCKSTEP ?
+				CLUSTER_MODE_LOCKSTEP : CLUSTER_MODE_SPLIT;
+	}
 	halted = ctrl & PROC_BOOT_CTRL_FLAG_R5_CORE_HALT;
 
 	/*
@@ -1166,20 +1200,13 @@ static int k3_r5_rproc_configure_mode(struct k3_r5_rproc *kproc)
 	 * deasserted), and is deemed as remoteproc mode
 	 */
 	if (c_state && !ret && !halted) {
-		dev_info(cdev, "configured R5F for IPC-only mode\n");
+		dev_err(cdev, "configured R5F for IPC-only mode\n");
 		kproc->rproc->state = RPROC_DETACHED;
+		kproc->rproc->detach_on_shutdown = true;
+		kproc->ipc_only = true;
 		ret = 1;
-		/* override rproc ops with only required IPC-only mode ops */
-		kproc->rproc->ops->prepare = NULL;
-		kproc->rproc->ops->unprepare = NULL;
-		kproc->rproc->ops->start = NULL;
-		kproc->rproc->ops->stop = NULL;
-		kproc->rproc->ops->attach = k3_r5_rproc_attach;
-		kproc->rproc->ops->detach = k3_r5_rproc_detach;
-		kproc->rproc->ops->get_loaded_rsc_table =
-						k3_r5_get_loaded_rsc_table;
 	} else if (!c_state) {
-		dev_info(cdev, "configured R5F for remoteproc mode\n");
+		dev_err(cdev, "configured R5F for remoteproc mode\n");
 		ret = 0;
 	} else {
 		dev_err(cdev, "mismatched mode: local_reset = %s, module_reset = %s, core_state = %s\n",
@@ -1212,7 +1239,7 @@ static int k3_r5_cluster_rproc_init(struct platform_device *pdev)
 	struct device *cdev;
 	const char *fw_name;
 	struct rproc *rproc;
-	int ret, ret1;
+	int ret;
 
 	core1 = list_last_entry(&cluster->cores, struct k3_r5_core, elem);
 	list_for_each_entry(core, &cluster->cores, elem) {
@@ -1272,27 +1299,16 @@ init_rmem:
 			goto err_add;
 		}
 
-		/* create only one rproc in lockstep, single-cpu or
-		 * single core mode
-		 */
+		/* create only one rproc in lockstep mode or single-cpu mode */
 		if (cluster->mode == CLUSTER_MODE_LOCKSTEP ||
-		    cluster->mode == CLUSTER_MODE_SINGLECPU ||
-		    cluster->mode == CLUSTER_MODE_SINGLECORE)
+			cluster->mode == CLUSTER_MODE_NONE     ||
+		    cluster->mode == CLUSTER_MODE_SINGLECPU)
 			break;
 	}
 
 	return 0;
 
 err_split:
-	if (rproc->state == RPROC_ATTACHED) {
-		ret1 = rproc_detach(rproc);
-		if (ret1) {
-			dev_err(kproc->dev, "failed to detach rproc, ret = %d\n",
-				ret1);
-			return ret1;
-		}
-	}
-
 	rproc_del(rproc);
 err_add:
 	k3_r5_reserved_mem_exit(kproc);
@@ -1316,7 +1332,6 @@ static void k3_r5_cluster_rproc_exit(void *data)
 	struct k3_r5_rproc *kproc;
 	struct k3_r5_core *core;
 	struct rproc *rproc;
-	int ret;
 
 	/*
 	 * lockstep mode and single-cpu modes have only one rproc associated
@@ -1331,14 +1346,6 @@ static void k3_r5_cluster_rproc_exit(void *data)
 	list_for_each_entry_from_reverse(core, &cluster->cores, elem) {
 		rproc = core->rproc;
 		kproc = rproc->priv;
-
-		if (rproc->state == RPROC_ATTACHED) {
-			ret = rproc_detach(rproc);
-			if (ret) {
-				dev_err(kproc->dev, "failed to detach rproc, ret = %d\n", ret);
-				return;
-			}
-		}
 
 		rproc_del(rproc);
 
@@ -1706,37 +1713,33 @@ static int k3_r5_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	cluster->dev = dev;
+	/*
+	 * default to most common efuse configurations - Split-mode on AM64x
+	 * and LockStep-mode on all others
+	 */
+	if (!data->is_single_core)
+		cluster->mode = data->single_cpu_mode ?
+						CLUSTER_MODE_SPLIT : CLUSTER_MODE_LOCKSTEP;
+	else
+		cluster->mode = CLUSTER_MODE_NONE;
+
 	cluster->soc_data = data;
 	INIT_LIST_HEAD(&cluster->cores);
 
-	ret = of_property_read_u32(np, "ti,cluster-mode", &cluster->mode);
-	if (ret < 0 && ret != -EINVAL) {
-		dev_err(dev, "invalid format for ti,cluster-mode, ret = %d\n",
-			ret);
-		return ret;
+	if (!data->is_single_core) {
+		ret = of_property_read_u32(np, "ti,cluster-mode", &cluster->mode);
+		if (ret < 0 && ret != -EINVAL) {
+			dev_err(dev, "invalid format for ti,cluster-mode, ret = %d\n", ret);
+			return ret;
+		}
 	}
 
-	if (ret == -EINVAL) {
-		/*
-		 * default to most common efuse configurations - Split-mode on AM64x
-		 * and LockStep-mode on all others
-		 * default to most common efuse configurations -
-		 * Split-mode on AM64x
-		 * Single core on AM62x
-		 * LockStep-mode on all others
-		 */
-		if (!data->is_single_core)
-			cluster->mode = data->single_cpu_mode ?
-					CLUSTER_MODE_SPLIT : CLUSTER_MODE_LOCKSTEP;
-		else
-			cluster->mode = CLUSTER_MODE_SINGLECORE;
-	}
-
-	if  ((cluster->mode == CLUSTER_MODE_SINGLECPU && !data->single_cpu_mode) ||
-	     (cluster->mode == CLUSTER_MODE_SINGLECORE && !data->is_single_core)) {
-		dev_err(dev, "Cluster mode = %d is not supported on this SoC\n", cluster->mode);
-		return -EINVAL;
-	}
+	/*
+	 * Translate SoC-specific dts value of 1 or 2 into appropriate
+	 * driver-specific mode. Valid values are dictated by YAML binding
+	 */
+	if (cluster->mode && data->single_cpu_mode)
+		cluster->mode = CLUSTER_MODE_SINGLECPU;
 
 	num_cores = of_get_available_child_count(np);
 	if (num_cores != 2 && !data->is_single_core) {

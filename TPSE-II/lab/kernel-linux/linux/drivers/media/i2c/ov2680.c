@@ -967,8 +967,6 @@ static int ov2680_v4l2_register(struct ov2680_dev *sensor)
 
 	ctrls->gain->flags |= V4L2_CTRL_FLAG_VOLATILE;
 	ctrls->exposure->flags |= V4L2_CTRL_FLAG_VOLATILE;
-	ctrls->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
-	ctrls->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
 
 	v4l2_ctrl_auto_cluster(2, &ctrls->auto_gain, 0, true);
 	v4l2_ctrl_auto_cluster(2, &ctrls->auto_exp, 1, true);
@@ -1099,7 +1097,7 @@ lock_destroy:
 	return ret;
 }
 
-static void ov2680_remove(struct i2c_client *client)
+static int ov2680_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov2680_dev *sensor = to_ov2680_dev(sd);
@@ -1108,11 +1106,14 @@ static void ov2680_remove(struct i2c_client *client)
 	mutex_destroy(&sensor->lock);
 	media_entity_cleanup(&sensor->sd.entity);
 	v4l2_ctrl_handler_free(&sensor->ctrls.handler);
+
+	return 0;
 }
 
 static int __maybe_unused ov2680_suspend(struct device *dev)
 {
-	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct i2c_client *client = to_i2c_client(dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov2680_dev *sensor = to_ov2680_dev(sd);
 
 	if (sensor->is_streaming)
@@ -1123,7 +1124,8 @@ static int __maybe_unused ov2680_suspend(struct device *dev)
 
 static int __maybe_unused ov2680_resume(struct device *dev)
 {
-	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct i2c_client *client = to_i2c_client(dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov2680_dev *sensor = to_ov2680_dev(sd);
 	int ret;
 
@@ -1158,7 +1160,7 @@ static struct i2c_driver ov2680_i2c_driver = {
 		.pm = &ov2680_pm_ops,
 		.of_match_table	= of_match_ptr(ov2680_dt_ids),
 	},
-	.probe		= ov2680_probe,
+	.probe_new	= ov2680_probe,
 	.remove		= ov2680_remove,
 };
 module_i2c_driver(ov2680_i2c_driver);

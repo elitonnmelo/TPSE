@@ -3,15 +3,17 @@
 #
 # link vmlinux
 #
-# vmlinux is linked from the objects in vmlinux.a and $(KBUILD_VMLINUX_LIBS).
-# vmlinux.a contains objects that are linked unconditionally.
+# vmlinux is linked from the objects selected by $(KBUILD_VMLINUX_OBJS) and
+# $(KBUILD_VMLINUX_LIBS). Most are built-in.a files from top-level directories
+# in the kernel tree, others are specified in arch/$(ARCH)/Makefile.
 # $(KBUILD_VMLINUX_LIBS) are archives which are linked conditionally
 # (not within --whole-archive), and do not require symbol indexes added.
 #
 # vmlinux
 #   ^
 #   |
-#   +--< vmlinux.a
+#   +--< $(KBUILD_VMLINUX_OBJS)
+#   |    +--< init/built-in.a drivers/built-in.a mm/built-in.a + more
 #   |
 #   +--< $(KBUILD_VMLINUX_LIBS)
 #   |    +--< lib/lib.a + more
@@ -32,15 +34,58 @@ LD="$1"
 KBUILD_LDFLAGS="$2"
 LDFLAGS_vmlinux="$3"
 
-is_enabled() {
-	grep -q "^$1=y" include/config/auto.conf
-}
-
 # Nice output in kbuild format
 # Will be supressed by "make -s"
 info()
 {
-	printf "  %-7s %s\n" "${1}" "${2}"
+	if [ "${quiet}" != "silent_" ]; then
+		printf "  %-7s %s\n" "${1}" "${2}"
+	fi
+}
+
+# Link of vmlinux.o used for section mismatch analysis
+# ${1} output file
+modpost_link()
+{
+	local objects
+
+	objects="--whole-archive				\
+		${KBUILD_VMLINUX_OBJS}				\
+		--no-whole-archive				\
+		--start-group					\
+		${KBUILD_VMLINUX_LIBS}				\
+		--end-group"
+
+	${LD} ${KBUILD_LDFLAGS} -r -o ${1} ${objects}
+}
+
+objtool_link()
+{
+	local objtoolopt;
+
+	if [ -n "${CONFIG_VMLINUX_VALIDATION}" ]; then
+		objtoolopt="check"
+		if [ -n "${CONFIG_CPU_UNRET_ENTRY}" ]; then
+			objtoolopt="${objtoolopt} --unret"
+		fi
+		if [ -z "${CONFIG_FRAME_POINTER}" ]; then
+			objtoolopt="${objtoolopt} --no-fp"
+		fi
+		if [ -n "${CONFIG_GCOV_KERNEL}" ]; then
+			objtoolopt="${objtoolopt} --no-unreachable"
+		fi
+		if [ -n "${CONFIG_RETPOLINE}" ]; then
+			objtoolopt="${objtoolopt} --retpoline"
+		fi
+		if [ -n "${CONFIG_X86_SMAP}" ]; then
+			objtoolopt="${objtoolopt} --uaccess"
+		fi
+		if [ -n "${CONFIG_SLS}" ]; then
+			objtoolopt="${objtoolopt} --sls"
+		fi
+		info OBJTOOL ${1}
+		tools/objtool/objtool ${objtoolopt} ${1}
+	fi
 }
 
 # Link of vmlinux
@@ -48,60 +93,51 @@ info()
 # ${2}, ${3}, ... - optional extra .o files
 vmlinux_link()
 {
+	local lds="${objtree}/${KBUILD_LDS}"
 	local output=${1}
-	local objs
-	local libs
-	local ld
-	local ldflags
-	local ldlibs
+	local objects
+	local strip_debug
 
 	info LD ${output}
 
 	# skip output file argument
 	shift
 
-	if is_enabled CONFIG_LTO_CLANG || is_enabled CONFIG_X86_KERNEL_IBT; then
-		# Use vmlinux.o instead of performing the slow LTO link again.
-		objs=vmlinux.o
-		libs=
-	else
-		objs=vmlinux.a
-		libs="${KBUILD_VMLINUX_LIBS}"
-	fi
-
-	if is_enabled CONFIG_MODULES; then
-		objs="${objs} .vmlinux.export.o"
-	fi
-
-	objs="${objs} init/version-timestamp.o"
-
-	if [ "${SRCARCH}" = "um" ]; then
-		wl=-Wl,
-		ld="${CC}"
-		ldflags="${CFLAGS_vmlinux}"
-		ldlibs="-lutil -lrt -lpthread"
-	else
-		wl=
-		ld="${LD}"
-		ldflags="${KBUILD_LDFLAGS} ${LDFLAGS_vmlinux}"
-		ldlibs=
-	fi
-
-	ldflags="${ldflags} ${wl}--script=${objtree}/${KBUILD_LDS}"
-
 	# The kallsyms linking does not need debug symbols included.
 	if [ "$output" != "${output#.tmp_vmlinux.kallsyms}" ] ; then
-		ldflags="${ldflags} ${wl}--strip-debug"
+		strip_debug=-Wl,--strip-debug
 	fi
 
-	if is_enabled CONFIG_VMLINUX_MAP; then
-		ldflags="${ldflags} ${wl}-Map=${output}.map"
-	fi
+	if [ "${SRCARCH}" != "um" ]; then
+		objects="--whole-archive			\
+			${KBUILD_VMLINUX_OBJS}			\
+			--no-whole-archive			\
+			--start-group				\
+			${KBUILD_VMLINUX_LIBS}			\
+			--end-group				\
+			${@}"
 
-	${ld} ${ldflags} -o ${output}					\
-		${wl}--whole-archive ${objs} ${wl}--no-whole-archive	\
-		${wl}--start-group ${libs} ${wl}--end-group		\
-		$@ ${ldlibs}
+		${LD} ${KBUILD_LDFLAGS} ${LDFLAGS_vmlinux}	\
+			${strip_debug#-Wl,}			\
+			-o ${output}				\
+			-T ${lds} ${objects}
+	else
+		objects="-Wl,--whole-archive			\
+			${KBUILD_VMLINUX_OBJS}			\
+			-Wl,--no-whole-archive			\
+			-Wl,--start-group			\
+			${KBUILD_VMLINUX_LIBS}			\
+			-Wl,--end-group				\
+			${@}"
+
+		${CC} ${CFLAGS_vmlinux}				\
+			${strip_debug}				\
+			-o ${output}				\
+			-Wl,-T,${lds}				\
+			${objects}				\
+			-lutil -lrt -lpthread
+		rm -f linux
+	fi
 }
 
 # generate .BTF typeinfo from DWARF debuginfo
@@ -144,24 +180,20 @@ kallsyms()
 {
 	local kallsymopt;
 
-	if is_enabled CONFIG_KALLSYMS_ALL; then
+	if [ -n "${CONFIG_KALLSYMS_ALL}" ]; then
 		kallsymopt="${kallsymopt} --all-symbols"
 	fi
 
-	if is_enabled CONFIG_KALLSYMS_ABSOLUTE_PERCPU; then
+	if [ -n "${CONFIG_KALLSYMS_ABSOLUTE_PERCPU}" ]; then
 		kallsymopt="${kallsymopt} --absolute-percpu"
 	fi
 
-	if is_enabled CONFIG_KALLSYMS_BASE_RELATIVE; then
+	if [ -n "${CONFIG_KALLSYMS_BASE_RELATIVE}" ]; then
 		kallsymopt="${kallsymopt} --base-relative"
 	fi
 
-	if is_enabled CONFIG_LTO_CLANG; then
-		kallsymopt="${kallsymopt} --lto-clang"
-	fi
-
 	info KSYMS ${2}
-	scripts/kallsyms ${kallsymopt} ${1} > ${2}
+	${NM} -n ${1} | scripts/kallsyms ${kallsymopt} > ${2}
 }
 
 # Perform one step in kallsyms generation, including temporary linking of
@@ -174,8 +206,7 @@ kallsyms_step()
 	kallsyms_S=${kallsyms_vmlinux}.S
 
 	vmlinux_link ${kallsyms_vmlinux} "${kallsymso_prev}" ${btf_vmlinux_bin_o}
-	mksysmap ${kallsyms_vmlinux} ${kallsyms_vmlinux}.syms ${kallsymso_prev}
-	kallsyms ${kallsyms_vmlinux}.syms ${kallsyms_S}
+	kallsyms ${kallsyms_vmlinux} ${kallsyms_S}
 
 	info AS ${kallsyms_S}
 	${CC} ${NOSTDINC_FLAGS} ${LINUXINCLUDE} ${KBUILD_CPPFLAGS} \
@@ -187,8 +218,7 @@ kallsyms_step()
 # See mksymap for additional details
 mksysmap()
 {
-	info NM ${2}
-	${CONFIG_SHELL} "${srctree}/scripts/mksysmap" ${1} ${2} ${3}
+	${CONFIG_SHELL} "${srctree}/scripts/mksysmap" ${1} ${2}
 }
 
 sorttable()
@@ -200,10 +230,26 @@ sorttable()
 cleanup()
 {
 	rm -f .btf.*
+	rm -f .tmp_System.map
+	rm -f .tmp_vmlinux*
 	rm -f System.map
 	rm -f vmlinux
-	rm -f vmlinux.map
+	rm -f vmlinux.o
 }
+
+on_exit()
+{
+	if [ $? -ne 0 ]; then
+		cleanup
+	fi
+}
+trap on_exit EXIT
+
+on_signals()
+{
+	exit 1
+}
+trap on_signals HUP INT QUIT TERM
 
 # Use "make V=1" to debug this script
 case "${KBUILD_VERBOSE}" in
@@ -217,10 +263,39 @@ if [ "$1" = "clean" ]; then
 	exit 0
 fi
 
-${MAKE} -f "${srctree}/scripts/Makefile.build" obj=init init/version-timestamp.o
+# We need access to CONFIG_ symbols
+. include/config/auto.conf
+
+# Update version
+info GEN .version
+if [ -r .version ]; then
+	VERSION=$(expr 0$(cat .version) + 1)
+	echo $VERSION > .version
+else
+	rm -f .version
+	echo 1 > .version
+fi;
+
+# final build of init/
+${MAKE} -f "${srctree}/scripts/Makefile.build" obj=init need-builtin=1
+
+#link vmlinux.o
+info LD vmlinux.o
+modpost_link vmlinux.o
+objtool_link vmlinux.o
+
+# modpost vmlinux.o to check for section mismatches
+${MAKE} -f "${srctree}/scripts/Makefile.modpost" MODPOST_VMLINUX=1
+
+info MODINFO modules.builtin.modinfo
+${OBJCOPY} -j .modinfo -O binary vmlinux.o modules.builtin.modinfo
+info GEN modules.builtin
+# The second line aids cases where multiple modules share the same object.
+tr '\0' '\n' < modules.builtin.modinfo | sed -n 's/^[[:alnum:]:_]*\.file=//p' |
+	tr ' ' '\n' | uniq | sed -e 's:^:kernel/:' -e 's/$/.ko/' > modules.builtin
 
 btf_vmlinux_bin_o=""
-if is_enabled CONFIG_DEBUG_INFO_BTF; then
+if [ -n "${CONFIG_DEBUG_INFO_BTF}" ]; then
 	btf_vmlinux_bin_o=.btf.vmlinux.bin.o
 	if ! gen_btf .tmp_vmlinux.btf $btf_vmlinux_bin_o ; then
 		echo >&2 "Failed to generate BTF for vmlinux"
@@ -232,19 +307,19 @@ fi
 kallsymso=""
 kallsymso_prev=""
 kallsyms_vmlinux=""
-if is_enabled CONFIG_KALLSYMS; then
+if [ -n "${CONFIG_KALLSYMS}" ]; then
 
 	# kallsyms support
 	# Generate section listing all symbols and add it into vmlinux
 	# It's a three step process:
-	# 1)  Link .tmp_vmlinux.kallsyms1 so it has all symbols and sections,
+	# 1)  Link .tmp_vmlinux1 so it has all symbols and sections,
 	#     but __kallsyms is empty.
 	#     Running kallsyms on that gives us .tmp_kallsyms1.o with
 	#     the right size
-	# 2)  Link .tmp_vmlinux.kallsyms2 so it now has a __kallsyms section of
+	# 2)  Link .tmp_vmlinux2 so it now has a __kallsyms section of
 	#     the right size, but due to the added section, some
 	#     addresses have shifted.
-	#     From here, we generate a correct .tmp_vmlinux.kallsyms2.o
+	#     From here, we generate a correct .tmp_kallsyms2.o
 	# 3)  That link may have expanded the kernel image enough that
 	#     more linker branch stubs / trampolines had to be added, which
 	#     introduces new names, which further expands kallsyms. Do another
@@ -272,14 +347,12 @@ fi
 vmlinux_link vmlinux "${kallsymso}" ${btf_vmlinux_bin_o}
 
 # fill in BTF IDs
-if is_enabled CONFIG_DEBUG_INFO_BTF && is_enabled CONFIG_BPF; then
+if [ -n "${CONFIG_DEBUG_INFO_BTF}" -a -n "${CONFIG_BPF}" ]; then
 	info BTFIDS vmlinux
 	${RESOLVE_BTFIDS} vmlinux
 fi
 
-mksysmap vmlinux System.map ${kallsymso}
-
-if is_enabled CONFIG_BUILDTIME_TABLE_SORT; then
+if [ -n "${CONFIG_BUILDTIME_TABLE_SORT}" ]; then
 	info SORTTAB vmlinux
 	if ! sorttable vmlinux; then
 		echo >&2 Failed to sort kernel tables
@@ -287,14 +360,16 @@ if is_enabled CONFIG_BUILDTIME_TABLE_SORT; then
 	fi
 fi
 
+info SYSMAP System.map
+mksysmap vmlinux System.map
+
 # step a (see comment above)
-if is_enabled CONFIG_KALLSYMS; then
-	if ! cmp -s System.map ${kallsyms_vmlinux}.syms; then
+if [ -n "${CONFIG_KALLSYMS}" ]; then
+	mksysmap ${kallsyms_vmlinux} .tmp_System.map
+
+	if ! cmp -s System.map .tmp_System.map; then
 		echo >&2 Inconsistent kallsyms data
-		echo >&2 'Try "make KALLSYMS_EXTRA_PASS=1" as a workaround'
+		echo >&2 Try "make KALLSYMS_EXTRA_PASS=1" as a workaround
 		exit 1
 	fi
 fi
-
-# For fixdep
-echo "vmlinux: $0" > .vmlinux.d

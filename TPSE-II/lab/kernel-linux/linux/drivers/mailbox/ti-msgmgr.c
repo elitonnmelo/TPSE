@@ -430,20 +430,14 @@ static int ti_msgmgr_send_data(struct mbox_chan *chan, void *data)
 		/* Ensure all unused data is 0 */
 		data_trail &= 0xFFFFFFFF >> (8 * (sizeof(u32) - trail_bytes));
 		writel(data_trail, data_reg);
-		data_reg += sizeof(u32);
+		data_reg++;
 	}
-
 	/*
 	 * 'data_reg' indicates next register to write. If we did not already
 	 * write on tx complete reg(last reg), we must do so for transmit
-	 * In addition, we also need to make sure all intermediate data
-	 * registers(if any required), are reset to 0 for TISCI backward
-	 * compatibility to be maintained.
 	 */
-	while (data_reg <= qinst->queue_buff_end) {
-		writel(0, data_reg);
-		data_reg += sizeof(u32);
-	}
+	if (data_reg <= qinst->queue_buff_end)
+		writel(0, qinst->queue_buff_end);
 
 	/* If we are in polled mode, wait for a response before proceeding */
 	if (ti_msgmgr_chan_has_polled_queue_rx(message->chan_rx))
@@ -711,7 +705,7 @@ static int ti_msgmgr_queue_rx_set_polled_mode(struct ti_queue_inst *qinst, bool 
 	return 0;
 }
 
-static int ti_msgmgr_suspend(struct device *dev)
+static int __maybe_unused ti_msgmgr_suspend(struct device *dev)
 {
 	struct ti_msgmgr_inst *inst = dev_get_drvdata(dev);
 	struct ti_queue_inst *qinst;
@@ -730,7 +724,7 @@ static int ti_msgmgr_suspend(struct device *dev)
 	return 0;
 }
 
-static int ti_msgmgr_resume(struct device *dev)
+static int __maybe_unused ti_msgmgr_resume(struct device *dev)
 {
 	struct ti_msgmgr_inst *inst = dev_get_drvdata(dev);
 	struct ti_queue_inst *qinst;
@@ -744,7 +738,7 @@ static int ti_msgmgr_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(ti_msgmgr_pm_ops, ti_msgmgr_suspend, ti_msgmgr_resume);
+static SIMPLE_DEV_PM_OPS(ti_msgmgr_pm_ops, ti_msgmgr_suspend, ti_msgmgr_resume);
 
 /* Queue operations */
 static const struct mbox_chan_ops ti_msgmgr_chan_ops = {

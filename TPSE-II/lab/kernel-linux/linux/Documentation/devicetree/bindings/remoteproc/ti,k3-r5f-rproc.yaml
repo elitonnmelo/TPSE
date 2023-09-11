@@ -21,8 +21,8 @@ description: |
   called "Single-CPU" mode, where only Core0 is used, but with ability to use
   Core1's TCMs as well.
 
-  AM62 SoC family support a single R5F core only which runs Device Manager
-  firmware and can also be used as a remote processor with IPC communication.
+  AM62x SoCs support a single R5F core only which is used for DM firmware
+  and can also be used as a remote processor with IPC communication.
 
   Each Dual-Core R5F sub-system is represented as a single DTS node
   representing the cluster, with a pair of child DT nodes representing
@@ -31,17 +31,20 @@ description: |
   the device management of the remote processor and to communicate with the
   remote processor.
 
+  Since AM62x SoC only support a single core, there is no cluster-mode property
+  setting required for it.
+
 properties:
   $nodename:
     pattern: "^r5fss(@.*)?"
 
   compatible:
     enum:
-      - ti,am62-r5fss
-      - ti,am64-r5fss
       - ti,am654-r5fss
-      - ti,j7200-r5fss
       - ti,j721e-r5fss
+      - ti,j7200-r5fss
+      - ti,am64-r5fss
+      - ti,am62-r5fss
       - ti,j721s2-r5fss
 
   power-domains:
@@ -68,17 +71,10 @@ properties:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: |
       Configuration Mode for the Dual R5F cores within the R5F cluster.
-      For most SoCs (AM65x, J721E, J7200, J721s2),
-      It should be either a value of 1 (LockStep mode) or 0 (Split mode) on
+      Should be either a value of 1 (LockStep mode) or 0 (Split mode) on
       most SoCs (AM65x, J721E, J7200, J721s2), default is LockStep mode if
-      omitted.
-      For AM64x SoCs,
-      It  should be either a value of 0 (Split mode) or 2 (Single-CPU mode) and
-      default is Split mode if omitted.
-      For AM62x SoCs,
-      It should be set as 3 (Single-Core mode) which is also the default if
-      omitted.
-
+      omitted; and should be either a value of 0 (Split mode) or 2
+      (Single-CPU mode) on AM64x SoCs, default is Split mode if omitted.
 
 # R5F Processor Child Nodes:
 # ==========================
@@ -92,8 +88,7 @@ patternProperties:
       are some specific integration differences for the IP like the usage of
       a Region Address Translator (RAT) for translating the larger SoC bus
       addresses into a 32-bit address space for the processor. For AM62x,
-      the R5F Sub-System device node should only define one R5F child node
-      as it has only one core available.
+      should only define one R5F child node as it has only one core available.
 
       Each R5F core has an associated 64 KB of Tightly-Coupled Memory (TCM)
       internal memories split between two banks - TCMA and TCMB (further
@@ -108,16 +103,17 @@ patternProperties:
       addresses. Cache and memory access settings are provided through a
       Memory Protection Unit (MPU), programmable only from the R5Fs.
 
-    $ref: /schemas/arm/keystone/ti,k3-sci-common.yaml#
+    allOf:
+      - $ref: /schemas/arm/keystone/ti,k3-sci-common.yaml#
 
     properties:
       compatible:
         enum:
-          - ti,am62-r5f
-          - ti,am64-r5f
           - ti,am654-r5f
-          - ti,j7200-r5f
           - ti,j721e-r5f
+          - ti,j7200-r5f
+          - ti,am64-r5f
+          - ti,am62-r5f
           - ti,j721s2-r5f
 
       reg:
@@ -202,8 +198,6 @@ patternProperties:
         $ref: /schemas/types.yaml#/definitions/phandle-array
         minItems: 1
         maxItems: 4
-        items:
-          maxItems: 1
         description: |
           phandles to one or more reserved on-chip SRAM regions. The regions
           should be defined as child nodes of the respective SRAM node, and
@@ -221,7 +215,6 @@ patternProperties:
       - firmware-name
 
     unevaluatedProperties: false
-
 allOf:
   - if:
       properties:
@@ -233,15 +226,7 @@ allOf:
         ti,cluster-mode:
           enum: [0, 2]
 
-  - if:
-      properties:
-        compatible:
-          enum:
-            - ti,am654-r5fss
-            - ti,j7200-r5fss
-            - ti,j721e-r5fss
-            - ti,j721s2-r5fss
-    then:
+    else:
       properties:
         ti,cluster-mode:
           enum: [0, 1]
@@ -253,8 +238,8 @@ allOf:
             - ti,am62-r5fss
     then:
       properties:
-        ti,cluster-mode:
-          enum: [3]
+        ti,cluster-mode: false
+
 
 required:
   - compatible
@@ -267,17 +252,11 @@ additionalProperties: false
 
 examples:
   - |
-    soc {
+    / {
+        model = "Texas Instruments K3 AM654 SoC";
+        compatible = "ti,am654-evm", "ti,am654";
         #address-cells = <2>;
         #size-cells = <2>;
-
-        mailbox0: mailbox-0 {
-            #mbox-cells = <1>;
-        };
-
-        mailbox1: mailbox-1 {
-            #mbox-cells = <1>;
-        };
 
         bus@100000 {
             compatible = "simple-bus";

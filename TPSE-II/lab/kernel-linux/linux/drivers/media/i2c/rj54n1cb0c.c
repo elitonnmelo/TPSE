@@ -1297,7 +1297,8 @@ done:
 	return ret;
 }
 
-static int rj54n1_probe(struct i2c_client *client)
+static int rj54n1_probe(struct i2c_client *client,
+			const struct i2c_device_id *did)
 {
 	struct rj54n1 *rj54n1;
 	struct i2c_adapter *adapter = client->adapter;
@@ -1397,7 +1398,7 @@ err_free_ctrl:
 	return ret;
 }
 
-static void rj54n1_remove(struct i2c_client *client)
+static int rj54n1_remove(struct i2c_client *client)
 {
 	struct rj54n1 *rj54n1 = to_rj54n1(client);
 
@@ -1409,6 +1410,8 @@ static void rj54n1_remove(struct i2c_client *client)
 	clk_put(rj54n1->clk);
 	v4l2_ctrl_handler_free(&rj54n1->hdl);
 	v4l2_async_unregister_subdev(&rj54n1->subdev);
+
+	return 0;
 }
 
 static const struct i2c_device_id rj54n1_id[] = {

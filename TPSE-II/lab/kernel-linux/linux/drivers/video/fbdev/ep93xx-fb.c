@@ -548,18 +548,16 @@ static int ep93xxfb_probe(struct platform_device *pdev)
 	}
 
 	ep93xxfb_set_par(info);
-	clk_prepare_enable(fbi->clk);
+	clk_enable(fbi->clk);
 
 	err = register_framebuffer(info);
 	if (err)
-		goto failed_framebuffer;
+		goto failed_check;
 
 	dev_info(info->dev, "registered. Mode = %dx%d-%d\n",
 		 info->var.xres, info->var.yres, info->var.bits_per_pixel);
 	return 0;
 
-failed_framebuffer:
-	clk_disable_unprepare(fbi->clk);
 failed_check:
 	if (fbi->mach_info->teardown)
 		fbi->mach_info->teardown(pdev);
@@ -573,13 +571,13 @@ failed_cmap:
 	return err;
 }
 
-static void ep93xxfb_remove(struct platform_device *pdev)
+static int ep93xxfb_remove(struct platform_device *pdev)
 {
 	struct fb_info *info = platform_get_drvdata(pdev);
 	struct ep93xx_fbi *fbi = info->par;
 
 	unregister_framebuffer(info);
-	clk_disable_unprepare(fbi->clk);
+	clk_disable(fbi->clk);
 	ep93xxfb_dealloc_videomem(info);
 	fb_dealloc_cmap(&info->cmap);
 
@@ -587,11 +585,13 @@ static void ep93xxfb_remove(struct platform_device *pdev)
 		fbi->mach_info->teardown(pdev);
 
 	kfree(info);
+
+	return 0;
 }
 
 static struct platform_driver ep93xxfb_driver = {
 	.probe		= ep93xxfb_probe,
-	.remove_new	= ep93xxfb_remove,
+	.remove		= ep93xxfb_remove,
 	.driver = {
 		.name	= "ep93xx-fb",
 	},

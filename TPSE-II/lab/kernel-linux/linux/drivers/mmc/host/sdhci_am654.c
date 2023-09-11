@@ -311,6 +311,7 @@ static void sdhci_j721e_4bit_set_clock(struct sdhci_host *host,
 	struct sdhci_am654_data *sdhci_am654 = sdhci_pltfm_priv(pltfm_host);
 	unsigned char timing = host->mmc->ios.timing;
 	u32 otap_del_sel;
+	u32 itap_del_sel;
 	u32 mask, val;
 
 	/* Setup DLL Output TAP delay */
@@ -322,7 +323,14 @@ static void sdhci_j721e_4bit_set_clock(struct sdhci_host *host,
 	mask = OTAPDLYENA_MASK | OTAPDLYSEL_MASK;
 	val = (0x1 << OTAPDLYENA_SHIFT) |
 	      (otap_del_sel << OTAPDLYSEL_SHIFT);
+
+	itap_del_sel = sdhci_am654->itap_del_sel[timing];
+	mask |= ITAPDLYSEL_MASK | ITAPDLYENA_MASK;
+	val |= (1 << ITAPDLYENA_SHIFT) | (itap_del_sel << ITAPDLYSEL_SHIFT);
+	regmap_update_bits(sdhci_am654->base, PHY_CTRL4, ITAPCHGWIN_MASK,
+			   1 << ITAPCHGWIN_SHIFT);
 	regmap_update_bits(sdhci_am654->base, PHY_CTRL4, mask, val);
+	regmap_update_bits(sdhci_am654->base, PHY_CTRL4, ITAPCHGWIN_MASK, 0);
 
 	regmap_update_bits(sdhci_am654->base, PHY_CTRL5, CLKBUFSEL_MASK,
 			   sdhci_am654->clkbuf_sel);
@@ -352,6 +360,8 @@ static void sdhci_am654_write_b(struct sdhci_host *host, u8 val, int reg)
 		 */
 		case MMC_TIMING_SD_HS:
 		case MMC_TIMING_MMC_HS:
+		case MMC_TIMING_UHS_SDR12:
+		case MMC_TIMING_UHS_SDR25:
 			val &= ~SDHCI_CTRL_HISPD;
 		}
 	}
@@ -368,7 +378,7 @@ static void sdhci_am654_write_b(struct sdhci_host *host, u8 val, int reg)
 					MAX_POWER_ON_TIMEOUT, false, host, val,
 					reg);
 		if (ret)
-			dev_info(mmc_dev(host->mmc), "Power on failed\n");
+			dev_warn(mmc_dev(host->mmc), "Power on failed\n");
 	}
 }
 
@@ -390,8 +400,18 @@ static void sdhci_am654_reset(struct sdhci_host *host, u8 mask)
 static int sdhci_am654_execute_tuning(struct mmc_host *mmc, u32 opcode)
 {
 	struct sdhci_host *host = mmc_priv(mmc);
-	int err = sdhci_execute_tuning(mmc, opcode);
+	int err;
+	bool dcrc_was_enabled = false;
 
+	if (host->ier & SDHCI_INT_DATA_CRC) {
+		host->ier &= ~SDHCI_INT_DATA_CRC | ~SDHCI_INT_DATA_END_BIT |
+			     ~SDHCI_INT_DATA_TIMEOUT;
+		dcrc_was_enabled = true;
+		sdhci_writel(host, host->ier, SDHCI_INT_ENABLE);
+		sdhci_writel(host, host->ier, SDHCI_SIGNAL_ENABLE);
+	}
+
+	err = sdhci_execute_tuning(mmc, opcode);
 	if (err)
 		return err;
 	/*
@@ -399,6 +419,13 @@ static int sdhci_am654_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	 * Do a command and data reset to get rid of it
 	 */
 	sdhci_reset(host, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
+
+	/* Reenable forbidden interrupt */
+	if (dcrc_was_enabled) {
+		host->ier |= SDHCI_INT_DATA_CRC | SDHCI_INT_DATA_END_BIT | SDHCI_INT_DATA_TIMEOUT;
+		sdhci_writel(host, host->ier, SDHCI_INT_ENABLE);
+		sdhci_writel(host, host->ier, SDHCI_SIGNAL_ENABLE);
+	}
 
 	return 0;
 }
@@ -554,8 +581,9 @@ static const struct cqhci_host_ops sdhci_am654_cqhci_ops = {
 static int sdhci_am654_cqe_add_host(struct sdhci_host *host)
 {
 	struct cqhci_host *cq_host;
+	int ret;
 
-	cq_host = devm_kzalloc(mmc_dev(host->mmc), sizeof(struct cqhci_host),
+	cq_host = devm_kzalloc(host->mmc->parent, sizeof(struct cqhci_host),
 			       GFP_KERNEL);
 	if (!cq_host)
 		return -ENOMEM;
@@ -567,7 +595,9 @@ static int sdhci_am654_cqe_add_host(struct sdhci_host *host)
 
 	host->mmc->caps2 |= MMC_CAP2_CQE;
 
-	return cqhci_init(cq_host, host->mmc, 1);
+	ret = cqhci_init(cq_host, host->mmc, 1);
+
+	return ret;
 }
 
 static int sdhci_am654_get_otap_delay(struct sdhci_host *host,
@@ -598,7 +628,7 @@ static int sdhci_am654_get_otap_delay(struct sdhci_host *host,
 		return 0;
 	}
 
-	for (i = MMC_TIMING_MMC_HS; i <= MMC_TIMING_MMC_HS400; i++) {
+	for (i = MMC_TIMING_LEGACY; i <= MMC_TIMING_MMC_HS400; i++) {
 
 		ret = device_property_read_u32(dev, td[i].otap_binding,
 					       &sdhci_am654->otap_del_sel[i]);
@@ -829,7 +859,7 @@ static int sdhci_am654_probe(struct platform_device *pdev)
 
 	ret = mmc_of_parse(host->mmc);
 	if (ret) {
-		dev_err_probe(dev, ret, "parsing dt failed\n");
+		dev_err(dev, "parsing dt failed (%d)\n", ret);
 		goto err_pltfm_free;
 	}
 

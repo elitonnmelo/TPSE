@@ -7,6 +7,16 @@
 
 #include "k3-psil-priv.h"
 
+#define PSIL_PDMA_XY_TR(x)					\
+	{							\
+		.thread_id = x,					\
+		.ep_config = {					\
+			.ep_type = PSIL_EP_PDMA_XY,		\
+			.mapped_channel_id = -1,		\
+			.default_flow_id = -1,			\
+		},						\
+	}
+
 #define PSIL_PDMA_XY_PKT(x)					\
 	{							\
 		.thread_id = x,					\

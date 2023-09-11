@@ -624,9 +624,11 @@ static int ov7740_set_stream(struct v4l2_subdev *sd, int enable)
 	}
 
 	if (enable) {
-		ret = pm_runtime_resume_and_get(&client->dev);
-		if (ret < 0)
+		ret = pm_runtime_get_sync(&client->dev);
+		if (ret < 0) {
+			pm_runtime_put_noidle(&client->dev);
 			goto err_unlock;
+		}
 
 		ret = ov7740_start_streaming(ov7740);
 		if (ret)
@@ -1153,7 +1155,7 @@ error_detect:
 	return ret;
 }
 
-static void ov7740_remove(struct i2c_client *client)
+static int ov7740_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov7740 *ov7740 = container_of(sd, struct ov7740, subdev);
@@ -1170,11 +1172,13 @@ static void ov7740_remove(struct i2c_client *client)
 	pm_runtime_put_noidle(&client->dev);
 
 	ov7740_set_power(ov7740, 0);
+	return 0;
 }
 
 static int __maybe_unused ov7740_runtime_suspend(struct device *dev)
 {
-	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct i2c_client *client = to_i2c_client(dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov7740 *ov7740 = container_of(sd, struct ov7740, subdev);
 
 	ov7740_set_power(ov7740, 0);
@@ -1184,7 +1188,8 @@ static int __maybe_unused ov7740_runtime_suspend(struct device *dev)
 
 static int __maybe_unused ov7740_runtime_resume(struct device *dev)
 {
-	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct i2c_client *client = to_i2c_client(dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov7740 *ov7740 = container_of(sd, struct ov7740, subdev);
 
 	return ov7740_set_power(ov7740, 1);
@@ -1212,7 +1217,7 @@ static struct i2c_driver ov7740_i2c_driver = {
 		.pm = &ov7740_pm_ops,
 		.of_match_table = of_match_ptr(ov7740_of_match),
 	},
-	.probe    = ov7740_probe,
+	.probe_new = ov7740_probe,
 	.remove   = ov7740_remove,
 	.id_table = ov7740_id,
 };

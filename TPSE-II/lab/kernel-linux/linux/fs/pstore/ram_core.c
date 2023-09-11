@@ -13,13 +13,12 @@
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/memblock.h>
+#include <linux/pstore_ram.h>
 #include <linux/rslib.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
 #include <asm/page.h>
-
-#include "ram_internal.h"
 
 /**
  * struct persistent_ram_buffer - persistent circular RAM buffer
@@ -247,7 +246,7 @@ static int persistent_ram_init_ecc(struct persistent_ram_zone *prz,
 		pr_info("error in header, %d\n", numerr);
 		prz->corrected_bytes += numerr;
 	} else if (numerr < 0) {
-		pr_info_ratelimited("uncorrectable error in header\n");
+		pr_info("uncorrectable error in header\n");
 		prz->bad_blocks++;
 	}
 
@@ -264,10 +263,10 @@ ssize_t persistent_ram_ecc_string(struct persistent_ram_zone *prz,
 
 	if (prz->corrected_bytes || prz->bad_blocks)
 		ret = snprintf(str, len, ""
-			"\nECC: %d Corrected bytes, %d unrecoverable blocks\n",
+			"\n%d Corrected bytes, %d unrecoverable blocks\n",
 			prz->corrected_bytes, prz->bad_blocks);
 	else
-		ret = snprintf(str, len, "\nECC: No errors detected\n");
+		ret = snprintf(str, len, "\nNo errors detected\n");
 
 	return ret;
 }
@@ -397,10 +396,6 @@ void persistent_ram_zap(struct persistent_ram_zone *prz)
 	persistent_ram_update_header_ecc(prz);
 }
 
-#define MEM_TYPE_WCOMBINE	0
-#define MEM_TYPE_NONCACHED	1
-#define MEM_TYPE_NORMAL		2
-
 static void *persistent_ram_vmap(phys_addr_t start, size_t size,
 		unsigned int memtype)
 {
@@ -414,20 +409,10 @@ static void *persistent_ram_vmap(phys_addr_t start, size_t size,
 	page_start = start - offset_in_page(start);
 	page_count = DIV_ROUND_UP(size + offset_in_page(start), PAGE_SIZE);
 
-	switch (memtype) {
-	case MEM_TYPE_NORMAL:
-		prot = PAGE_KERNEL;
-		break;
-	case MEM_TYPE_NONCACHED:
+	if (memtype)
 		prot = pgprot_noncached(PAGE_KERNEL);
-		break;
-	case MEM_TYPE_WCOMBINE:
+	else
 		prot = pgprot_writecombine(PAGE_KERNEL);
-		break;
-	default:
-		pr_err("invalid mem_type=%d\n", memtype);
-		return NULL;
-	}
 
 	pages = kmalloc_array(page_count, sizeof(struct page *), GFP_KERNEL);
 	if (!pages) {
@@ -440,11 +425,7 @@ static void *persistent_ram_vmap(phys_addr_t start, size_t size,
 		phys_addr_t addr = page_start + i * PAGE_SIZE;
 		pages[i] = pfn_to_page(addr >> PAGE_SHIFT);
 	}
-	/*
-	 * VM_IOREMAP used here to bypass this region during vread()
-	 * and kmap_atomic() (i.e. kcore) to avoid __va() failures.
-	 */
-	vaddr = vmap(pages, page_count, VM_MAP | VM_IOREMAP, prot);
+	vaddr = vmap(pages, page_count, VM_MAP, prot);
 	kfree(pages);
 
 	/*
@@ -548,14 +529,8 @@ static int persistent_ram_post_init(struct persistent_ram_zone *prz, u32 sig,
 	return 0;
 }
 
-void persistent_ram_free(struct persistent_ram_zone **_prz)
+void persistent_ram_free(struct persistent_ram_zone *prz)
 {
-	struct persistent_ram_zone *prz;
-
-	if (!_prz)
-		return;
-
-	prz = *_prz;
 	if (!prz)
 		return;
 
@@ -579,7 +554,6 @@ void persistent_ram_free(struct persistent_ram_zone **_prz)
 	persistent_ram_free_old(prz);
 	kfree(prz->label);
 	kfree(prz);
-	*_prz = NULL;
 }
 
 struct persistent_ram_zone *persistent_ram_new(phys_addr_t start, size_t size,
@@ -599,8 +573,6 @@ struct persistent_ram_zone *persistent_ram_new(phys_addr_t start, size_t size,
 	raw_spin_lock_init(&prz->buffer_lock);
 	prz->flags = flags;
 	prz->label = kstrdup(label, GFP_KERNEL);
-	if (!prz->label)
-		goto err;
 
 	ret = persistent_ram_buffer_map(start, size, prz, memtype);
 	if (ret)
@@ -618,6 +590,6 @@ struct persistent_ram_zone *persistent_ram_new(phys_addr_t start, size_t size,
 
 	return prz;
 err:
-	persistent_ram_free(&prz);
+	persistent_ram_free(prz);
 	return ERR_PTR(ret);
 }

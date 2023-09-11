@@ -1425,6 +1425,7 @@ static int fsl_diu_open(struct fb_info *info, int user)
 static int fsl_diu_release(struct fb_info *info, int user)
 {
 	struct mfb_info *mfbi = info->par;
+	int res = 0;
 
 	spin_lock(&diu_lock);
 	mfbi->count--;
@@ -1446,7 +1447,7 @@ static int fsl_diu_release(struct fb_info *info, int user)
 	}
 
 	spin_unlock(&diu_lock);
-	return 0;
+	return res;
 }
 
 static const struct fb_ops fsl_diu_ops = {
@@ -1823,7 +1824,7 @@ error:
 	return ret;
 }
 
-static void fsl_diu_remove(struct platform_device *pdev)
+static int fsl_diu_remove(struct platform_device *pdev)
 {
 	struct fsl_diu_data *data;
 	int i;
@@ -1837,6 +1838,8 @@ static void fsl_diu_remove(struct platform_device *pdev)
 		uninstall_fb(&data->fsl_diu_info[i]);
 
 	iounmap(data->diu_reg);
+
+	return 0;
 }
 
 #ifndef MODULE
@@ -1883,7 +1886,7 @@ static struct platform_driver fsl_diu_driver = {
 		.of_match_table = fsl_diu_match,
 	},
 	.probe  	= fsl_diu_probe,
-	.remove_new 	= fsl_diu_remove,
+	.remove 	= fsl_diu_remove,
 	.suspend	= fsl_diu_suspend,
 	.resume		= fsl_diu_resume,
 };

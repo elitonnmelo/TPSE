@@ -947,9 +947,11 @@ static int ov5695_s_stream(struct v4l2_subdev *sd, int on)
 		goto unlock_and_return;
 
 	if (on) {
-		ret = pm_runtime_resume_and_get(&client->dev);
-		if (ret < 0)
+		ret = pm_runtime_get_sync(&client->dev);
+		if (ret < 0) {
+			pm_runtime_put_noidle(&client->dev);
 			goto unlock_and_return;
+		}
 
 		ret = __ov5695_start_stream(ov5695);
 		if (ret) {
@@ -1032,7 +1034,8 @@ static void __ov5695_power_off(struct ov5695 *ov5695)
 
 static int __maybe_unused ov5695_runtime_resume(struct device *dev)
 {
-	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct i2c_client *client = to_i2c_client(dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov5695 *ov5695 = to_ov5695(sd);
 
 	return __ov5695_power_on(ov5695);
@@ -1040,7 +1043,8 @@ static int __maybe_unused ov5695_runtime_resume(struct device *dev)
 
 static int __maybe_unused ov5695_runtime_suspend(struct device *dev)
 {
-	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct i2c_client *client = to_i2c_client(dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov5695 *ov5695 = to_ov5695(sd);
 
 	__ov5695_power_off(ov5695);
@@ -1122,7 +1126,7 @@ static int ov5695_set_ctrl(struct v4l2_ctrl *ctrl)
 
 	switch (ctrl->id) {
 	case V4L2_CID_EXPOSURE:
-		/* 4 least significant bits of exposure are fractional part */
+		/* 4 least significant bits of expsoure are fractional part */
 		ret = ov5695_write_reg(ov5695->client, OV5695_REG_EXPOSURE,
 				       OV5695_REG_VALUE_24BIT, ctrl->val << 4);
 		break;
@@ -1267,7 +1271,8 @@ static int ov5695_configure_regulators(struct ov5695 *ov5695)
 				       ov5695->supplies);
 }
 
-static int ov5695_probe(struct i2c_client *client)
+static int ov5695_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
 	struct device *dev = &client->dev;
 	struct ov5695 *ov5695;
@@ -1334,7 +1339,7 @@ static int ov5695_probe(struct i2c_client *client)
 		goto err_power_off;
 #endif
 
-	ret = v4l2_async_register_subdev_sensor(sd);
+	ret = v4l2_async_register_subdev_sensor_common(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -1360,7 +1365,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static void ov5695_remove(struct i2c_client *client)
+static int ov5695_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov5695 *ov5695 = to_ov5695(sd);
@@ -1376,6 +1381,8 @@ static void ov5695_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__ov5695_power_off(ov5695);
 	pm_runtime_set_suspended(&client->dev);
+
+	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)
@@ -1392,8 +1399,8 @@ static struct i2c_driver ov5695_i2c_driver = {
 		.pm = &ov5695_pm_ops,
 		.of_match_table = of_match_ptr(ov5695_of_match),
 	},
-	.probe		= ov5695_probe,
-	.remove		= ov5695_remove,
+	.probe		= &ov5695_probe,
+	.remove		= &ov5695_remove,
 };
 
 module_i2c_driver(ov5695_i2c_driver);

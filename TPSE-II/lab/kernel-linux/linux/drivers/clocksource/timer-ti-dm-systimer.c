@@ -11,6 +11,7 @@
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/sched_clock.h>
+#include <linux/irqchip/arm-gic.h>
 
 #include <linux/clk/clk-conf.h>
 
@@ -29,6 +30,11 @@
 static int counter_32k;
 static u32 clocksource;
 static u32 clockevent;
+static struct irq_chip *clkev_irq_chip;
+static struct irq_desc *clkev_irq_desc;
+
+#define AM43XX_GIC_CPU_BASE				0x48240100
+static void __iomem *gic_cpu_base;
 
 /*
  * Subset of the timer registers we use. Note that the register offsets
@@ -251,24 +257,24 @@ static void __init dmtimer_systimer_assign_alwon(void)
 		counter_32k = -ENODEV;
 
 	for_each_matching_node(np, dmtimer_match_table) {
-		struct resource res;
 		if (!dmtimer_is_preferred(np))
 			continue;
 
-		if (!of_property_read_bool(np, "ti,timer-alwon"))
-			continue;
+		if (of_property_read_bool(np, "ti,timer-alwon")) {
+			const __be32 *addr;
 
-		if (of_address_to_resource(np, 0, &res))
-			continue;
+			addr = of_get_address(np, 0, NULL, NULL);
+			pa = of_translate_address(np, addr);
+			if (pa) {
+				/* Quirky omap3 boards must use dmtimer12 */
+				if (quirk_unreliable_oscillator &&
+				    pa == 0x48318000)
+					continue;
 
-		pa = res.start;
-
-		/* Quirky omap3 boards must use dmtimer12 */
-		if (quirk_unreliable_oscillator && pa == 0x48318000)
-			continue;
-
-		of_node_put(np);
-		break;
+				of_node_put(np);
+				break;
+			}
+		}
 	}
 
 	/* Usually no need for dmtimer clocksource if we have counter32 */
@@ -285,22 +291,24 @@ static void __init dmtimer_systimer_assign_alwon(void)
 static u32 __init dmtimer_systimer_find_first_available(void)
 {
 	struct device_node *np;
+	const __be32 *addr;
 	u32 pa = 0;
 
 	for_each_matching_node(np, dmtimer_match_table) {
-		struct resource res;
 		if (!dmtimer_is_preferred(np))
 			continue;
 
-		if (of_address_to_resource(np, 0, &res))
-			continue;
+		addr = of_get_address(np, 0, NULL, NULL);
+		pa = of_translate_address(np, addr);
+		if (pa) {
+			if (pa == clocksource || pa == clockevent) {
+				pa = 0;
+				continue;
+			}
 
-		if (res.start == clocksource || res.start == clockevent)
-			continue;
-
-		pa = res.start;
-		of_node_put(np);
-		break;
+			of_node_put(np);
+			break;
+		}
 	}
 
 	return pa;
@@ -343,10 +351,8 @@ static int __init dmtimer_systimer_init_clock(struct dmtimer_systimer *t,
 		return error;
 
 	r = clk_get_rate(clock);
-	if (!r) {
-		clk_disable_unprepare(clock);
+	if (!r)
 		return -ENODEV;
-	}
 
 	if (is_ick)
 		t->ick = clock;
@@ -506,12 +512,52 @@ static int dmtimer_set_periodic(struct clock_event_device *evt)
 	return 0;
 }
 
+static int omap_clockevent_late_ack_init(void)
+{
+	gic_cpu_base = ioremap(AM43XX_GIC_CPU_BASE, SZ_4K);
+
+	if (!gic_cpu_base)
+		return -ENOMEM;
+
+	return 0;
+}
+
+static void omap_clockevent_late_ack(void)
+{
+	u32 val;
+
+	if (!clkev_irq_chip)
+		return;
+
+	/*
+	 * For the gic to properly clear an interrupt it must be read
+	 * from INTACK register
+	 */
+	if (gic_cpu_base)
+		val = readl_relaxed(gic_cpu_base + GIC_CPU_INTACK);
+	if (clkev_irq_chip->irq_ack)
+		clkev_irq_chip->irq_ack(&clkev_irq_desc->irq_data);
+	if (clkev_irq_chip->irq_eoi)
+		clkev_irq_chip->irq_eoi(&clkev_irq_desc->irq_data);
+
+	clkev_irq_chip->irq_unmask(&clkev_irq_desc->irq_data);
+}
+
 static void omap_clockevent_idle(struct clock_event_device *evt)
 {
 	struct dmtimer_clockevent *clkevt = to_dmtimer_clockevent(evt);
 	struct dmtimer_systimer *t = &clkevt->t;
 
 	dmtimer_systimer_disable(t);
+
+        /*
+         * It is possible for a late interrupt to be generated which will
+         * cause a suspend failure. Let's ack it here both in the timer
+         * and the interrupt controller to avoid this.
+         */
+        writel_relaxed(OMAP_TIMER_INT_OVERFLOW, t->base + t->irq_stat);
+	omap_clockevent_late_ack();
+
 	clk_disable(t->fck);
 }
 
@@ -584,7 +630,7 @@ static int __init dmtimer_clkevt_init_common(struct dmtimer_clockevent *clkevt,
 	writel_relaxed(OMAP_TIMER_INT_OVERFLOW, t->base + t->wakeup);
 
 	pr_info("TI gptimer %s: %s%lu Hz at %pOF\n",
-		name, of_property_read_bool(np, "ti,timer-alwon") ?
+		name, of_find_property(np, "ti,timer-alwon", NULL) ?
 		"always-on " : "", t->rate, np->parent);
 
 	return 0;
@@ -620,7 +666,14 @@ static int __init dmtimer_clockevent_init(struct device_node *np)
 	    of_machine_is_compatible("ti,am43")) {
 		clkevt->dev.suspend = omap_clockevent_idle;
 		clkevt->dev.resume = omap_clockevent_unidle;
+
+		clkev_irq_desc = irq_to_desc(&clkevt->dev.irq);
+		if (clkev_irq_desc)
+			clkev_irq_chip = irq_desc_get_chip(clkev_irq_desc);
 	}
+
+	if (of_machine_is_compatible("ti,am43"))
+		omap_clockevent_late_ack_init();
 
 	return 0;
 
@@ -785,7 +838,7 @@ static int __init dmtimer_clocksource_init(struct device_node *np)
 		       t->base + t->ctrl);
 
 	pr_info("TI gptimer clocksource: %s%pOF\n",
-		of_property_read_bool(np, "ti,timer-alwon") ?
+		of_find_property(np, "ti,timer-alwon", NULL) ?
 		"always-on " : "", np->parent);
 
 	if (!dmtimer_sched_clock_counter) {
@@ -810,7 +863,7 @@ err_out_free:
  */
 static int __init dmtimer_systimer_init(struct device_node *np)
 {
-	struct resource res;
+	const __be32 *addr;
 	u32 pa;
 
 	/* One time init for the preferred timer configuration */
@@ -824,9 +877,8 @@ static int __init dmtimer_systimer_init(struct device_node *np)
 		return -EINVAL;
 	}
 
-
-	of_address_to_resource(np, 0, &res);
-	pa = (u32)res.start;
+	addr = of_get_address(np, 0, NULL, NULL);
+	pa = of_translate_address(np, addr);
 	if (!pa)
 		return -EINVAL;
 

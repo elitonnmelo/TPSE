@@ -34,6 +34,7 @@
 #define ADCFSM_STEPID		0x10
 #define SEQ_SETTLE		275
 #define MAX_12BIT		((1 << 12) - 1)
+#define PRESSURE_MAX		1000
 
 #define TSC_IRQENB_MASK		(IRQENB_FIFO0THRES | IRQENB_EOS | IRQENB_HW_PEN)
 
@@ -126,13 +127,12 @@ static int titsc_config_wires(struct titsc *ts_dev)
 static void titsc_step_config(struct titsc *ts_dev)
 {
 	unsigned int	config;
-	int i, n;
+	int i;
 	int end_step, first_step, tsc_steps;
 	u32 stepenable;
 
 	config = STEPCONFIG_MODE_HWSYNC |
-			STEPCONFIG_AVG_16 | ts_dev->bit_xp |
-			STEPCONFIG_INM_ADCREFM;
+			STEPCONFIG_AVG_16 | ts_dev->bit_xp;
 	switch (ts_dev->wires) {
 	case 4:
 		config |= STEPCONFIG_INP(ts_dev->inp_yp) | ts_dev->bit_xn;
@@ -151,11 +151,9 @@ static void titsc_step_config(struct titsc *ts_dev)
 	first_step = TOTAL_STEPS - tsc_steps;
 	/* Steps 16 to 16-coordinate_readouts is for X */
 	end_step = first_step + tsc_steps;
-	n = 0;
 	for (i = end_step - ts_dev->coordinate_readouts; i < end_step; i++) {
 		titsc_writel(ts_dev, REG_STEPCONFIG(i), config);
-		titsc_writel(ts_dev, REG_STEPDELAY(i),
-			     n++ == 0 ? STEPCONFIG_OPENDLY : 0);
+		titsc_writel(ts_dev, REG_STEPDELAY(i), STEPCONFIG_OPENDLY);
 	}
 
 	config = 0;
@@ -177,11 +175,9 @@ static void titsc_step_config(struct titsc *ts_dev)
 
 	/* 1 ... coordinate_readouts is for Y */
 	end_step = first_step + ts_dev->coordinate_readouts;
-	n = 0;
 	for (i = first_step; i < end_step; i++) {
 		titsc_writel(ts_dev, REG_STEPCONFIG(i), config);
-		titsc_writel(ts_dev, REG_STEPDELAY(i),
-			     n++ == 0 ? STEPCONFIG_OPENDLY : 0);
+		titsc_writel(ts_dev, REG_STEPDELAY(i), STEPCONFIG_OPENDLY);
 	}
 
 	/* Make CHARGECONFIG same as IDLECONFIG */
@@ -200,10 +196,7 @@ static void titsc_step_config(struct titsc *ts_dev)
 			STEPCONFIG_OPENDLY);
 
 	end_step++;
-	config = STEPCONFIG_MODE_HWSYNC |
-			STEPCONFIG_AVG_16 | ts_dev->bit_yp |
-			ts_dev->bit_xn | STEPCONFIG_INM_ADCREFM |
-			STEPCONFIG_INP(ts_dev->inp_yn);
+	config |= STEPCONFIG_INP(ts_dev->inp_yn);
 	titsc_writel(ts_dev, REG_STEPCONFIG(end_step), config);
 	titsc_writel(ts_dev, REG_STEPDELAY(end_step),
 			STEPCONFIG_OPENDLY);
@@ -242,6 +235,7 @@ static void titsc_read_coordinates(struct titsc *ts_dev,
 	for (i = 0; i < creads; i++) {
 		xvals[i] = titsc_readl(ts_dev, REG_FIFO0);
 		xvals[i] &= 0xfff;
+		pr_debug("i %d xval %d yval %d z1 %d z2 %d\n", i, xvals[i], yvals[i], *z1, *z2);
 	}
 
 	/*
@@ -318,15 +312,15 @@ static irqreturn_t titsc_irq(int irq, void *dev)
 			/*
 			 * Calculate pressure using formula
 			 * Resistance(touch) = x plate resistance *
-			 * x position/4096 * ((z2 / z1) - 1)
+			 * x postion/4096 * ((z2 / z1) - 1)
 			 */
-			z = z1 - z2;
+			z = z2 - z1;
 			z *= x;
 			z *= ts_dev->x_plate_resistance;
-			z /= z2;
+			z /= z1;
 			z = (z + 2047) >> 12;
-
-			if (z <= MAX_12BIT) {
+			pr_debug("x %d y %d z1 %d z2 %d z %d\n", x, y, z1, z2, z);
+			if (z <= PRESSURE_MAX) {
 				input_report_abs(input_dev, ABS_X, x);
 				input_report_abs(input_dev, ABS_Y, y);
 				input_report_abs(input_dev, ABS_PRESSURE, z);
@@ -467,6 +461,7 @@ static int titsc_probe(struct platform_device *pdev)
 	input_dev->name = "ti-tsc";
 	input_dev->dev.parent = &pdev->dev;
 
+	__set_bit(INPUT_PROP_DIRECT, input_dev->propbit);
 	input_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
 	input_dev->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
 
@@ -512,7 +507,7 @@ static int titsc_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int titsc_suspend(struct device *dev)
+static int __maybe_unused titsc_suspend(struct device *dev)
 {
 	struct titsc *ts_dev = dev_get_drvdata(dev);
 	unsigned int idle;
@@ -527,7 +522,7 @@ static int titsc_suspend(struct device *dev)
 	return 0;
 }
 
-static int titsc_resume(struct device *dev)
+static int __maybe_unused titsc_resume(struct device *dev)
 {
 	struct titsc *ts_dev = dev_get_drvdata(dev);
 
@@ -543,7 +538,7 @@ static int titsc_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(titsc_pm_ops, titsc_suspend, titsc_resume);
+static SIMPLE_DEV_PM_OPS(titsc_pm_ops, titsc_suspend, titsc_resume);
 
 static const struct of_device_id ti_tsc_dt_ids[] = {
 	{ .compatible = "ti,am3359-tsc", },
@@ -556,7 +551,7 @@ static struct platform_driver ti_tsc_driver = {
 	.remove	= titsc_remove,
 	.driver	= {
 		.name   = "TI-am335x-tsc",
-		.pm	= pm_sleep_ptr(&titsc_pm_ops),
+		.pm	= &titsc_pm_ops,
 		.of_match_table = ti_tsc_dt_ids,
 	},
 };

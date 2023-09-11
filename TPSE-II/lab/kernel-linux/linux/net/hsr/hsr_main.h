@@ -14,6 +14,7 @@
 #include <linux/list.h>
 #include <linux/if_vlan.h>
 #include <linux/if_hsr.h>
+#include <net/lredev.h>
 
 /* Time constants as specified in the HSR specification (IEC-62439-3 2010)
  * Table 8.
@@ -35,15 +36,29 @@
  * HSR_NODE_FORGET_TIME?
  */
 #define PRUNE_PERIOD			 3000 /* ms */
-#define HSR_TLV_EOT				   0  /* End of TLVs */
+
 #define HSR_TLV_ANNOUNCE		   22
 #define HSR_TLV_LIFE_CHECK		   23
 /* PRP V1 life check for Duplicate discard */
 #define PRP_TLV_LIFE_CHECK_DD		   20
 /* PRP V1 life check for Duplicate Accept */
 #define PRP_TLV_LIFE_CHECK_DA		   21
-/* PRP V1 life redundancy box MAC address */
-#define PRP_TLV_REDBOX_MAC		   30
+
+/* HSR Tag.
+ * As defined in IEC-62439-3:2010, the HSR tag is really { ethertype = 0x88FB,
+ * path, LSDU_size, sequence Nr }. But we let eth_header() create { h_dest,
+ * h_source, h_proto = 0x88FB }, and add { path, LSDU_size, sequence Nr,
+ * encapsulated protocol } instead.
+ *
+ * Field names as defined in the IEC:2010 standard for HSR.
+ */
+struct hsr_tag {
+	__be16		path_and_LSDU_size;
+	__be16		sequence_nr;
+	__be16		encap_proto;
+} __packed;
+
+#define HSR_HLEN	6
 
 #define HSR_V1_SUP_LSDUSIZE		52
 
@@ -80,18 +95,14 @@ struct hsr_vlan_ethhdr {
 	struct hsr_tag	hsr_tag;
 } __packed;
 
-struct hsr_sup_tlv {
-	u8		HSR_TLV_type;
-	u8		HSR_TLV_length;
-};
-
 /* HSR/PRP Supervision Frame data types.
  * Field names as defined in the IEC:2010 standard for HSR.
  */
 struct hsr_sup_tag {
-	__be16				path_and_HSR_ver;
-	__be16				sequence_nr;
-	struct hsr_sup_tlv  tlv;
+	__be16		path_and_HSR_ver;
+	__be16		sequence_nr;
+	__u8		HSR_TLV_type;
+	__u8		HSR_TLV_length;
 } __packed;
 
 struct hsr_sup_payload {
@@ -113,8 +124,21 @@ struct hsrv0_ethhdr_sp {
 	struct hsr_sup_tag	hsr_sup;
 } __packed;
 
+struct hsrv0_ethhdr_vlan_sp {
+	struct ethhdr		ethhdr;
+	struct vlan_hdr		vlanHdr;
+	struct hsr_sup_tag	hsr_sup;
+} __packed;
+
 struct hsrv1_ethhdr_sp {
 	struct ethhdr		ethhdr;
+	struct hsr_tag		hsr;
+	struct hsr_sup_tag	hsr_sup;
+} __packed;
+
+struct hsrv1_ethhdr_vlan_sp {
+	struct ethhdr		ethhdr;
+	struct vlan_hdr		vlanHdr;
 	struct hsr_tag		hsr;
 	struct hsr_sup_tag	hsr_sup;
 } __packed;
@@ -182,19 +206,22 @@ struct hsr_proto_ops {
 	void (*update_san_info)(struct hsr_node *node, bool is_sup);
 };
 
-struct hsr_self_node {
-	unsigned char	macaddress_A[ETH_ALEN];
-	unsigned char	macaddress_B[ETH_ALEN];
-	struct rcu_head	rcu_head;
+struct hsr_prp_debug_stats {
+	u32	cnt_tx_sup;
+	u32     cnt_rx_sup_a;
+	u32	cnt_rx_sup_b;
 };
 
 struct hsr_priv {
 	struct rcu_head		rcu_head;
 	struct list_head	ports;
 	struct list_head	node_db;	/* Known HSR nodes */
-	struct hsr_self_node	__rcu *self_node;	/* MACs of slaves */
+	struct list_head	self_node_db;	/* MACs of slaves */
 	struct timer_list	announce_timer;	/* Supervision frame dispatch */
 	struct timer_list	prune_timer;
+	unsigned int		rx_offloaded : 1;   /* lre handle in hw */
+	struct hsr_prp_debug_stats dbg_stats;  /* debug stats */
+	struct lre_stats	lre_stats;    /* lre interface stats */
 	int announce_count;
 	u16 sequence_nr;
 	u16 sup_sequence_nr;	/* For HSRv1 separate seq_nr for supervision */
@@ -208,13 +235,38 @@ struct hsr_priv {
 	u8 net_id;		/* for PRP, it occupies most significant 3 bits
 				 * of lan_id
 				 */
-	bool fwd_offloaded;	/* Forwarding offloaded to HW */
-	unsigned char		sup_multicast_addr[ETH_ALEN] __aligned(sizeof(u16));
-				/* Align to u16 boundary to avoid unaligned access
-				 * in ether_addr_equal
-				 */
+	/* Below are used when SV frames are to be sent with VLAN tag */
+	u8 use_vlan_for_sv;
+	u16 sv_frame_vid;
+	u8 sv_frame_dei;
+	u8 sv_frame_pcp;
+	/* To enable/disable SV frame transmission */
+	u8 disable_sv_frame;
+	/* value of hsr mode */
+	enum iec62439_3_hsr_modes hsr_mode;
+	/* PRP Transparent Reception */
+	enum iec62439_3_tr_modes prp_tr;
+	/* Duplicate discard mode */
+	enum iec62439_3_dd_modes dd_mode;
+	/* Clear Node Table command */
+	enum iec62439_3_clear_nt_cmd clear_nt_cmd;
+	u32 dlrmt;	/* duplicate list reside max time */
+	unsigned char		sup_multicast_addr[ETH_ALEN];
 #ifdef	CONFIG_DEBUG_FS
 	struct dentry *node_tbl_root;
+	struct dentry *node_tbl_file;
+	struct dentry *lre_info_file;
+#endif
+#ifdef	CONFIG_PROC_FS
+	struct proc_dir_entry *dir;
+	struct proc_dir_entry *hsr_mode_file;
+	struct proc_dir_entry *dd_mode_file;
+	struct proc_dir_entry *prp_tr_file;
+	struct proc_dir_entry *clear_nt_file;
+	struct proc_dir_entry *dlrmt_file;
+	struct proc_dir_entry *lre_stats_file;
+	struct proc_dir_entry *node_table_file;
+	struct proc_dir_entry *disable_sv_file;
 #endif
 };
 
@@ -250,6 +302,11 @@ static inline u16 prp_get_skb_sequence_nr(struct prp_rct *rct)
 	return ntohs(rct->sequence_nr);
 }
 
+static inline u16 get_prp_lan_id(struct prp_rct *rct)
+{
+	return ntohs(rct->lan_id_and_LSDU_size) >> 12;
+}
+
 /* assume there is a valid rct */
 static inline bool prp_check_lsdu_size(struct sk_buff *skb,
 				       struct prp_rct *rct,
@@ -269,6 +326,28 @@ static inline bool prp_check_lsdu_size(struct sk_buff *skb,
 
 	return (expected_lsdu_size == get_prp_LSDU_size(rct));
 }
+
+#define INC_CNT_TX_SUP(priv) ((priv)->dbg_stats.cnt_tx_sup++)
+#define INC_CNT_RX_SUP_A(priv) ((priv)->dbg_stats.cnt_rx_sup_a++)
+#define INC_CNT_RX_SUP_B(priv) ((priv)->dbg_stats.cnt_rx_sup_b++)
+
+#define INC_CNT_TX_AB(type, priv) (((type) == HSR_PT_SLAVE_A) ? \
+		(priv)->lre_stats.cnt_tx_a++ : \
+		(priv)->lre_stats.cnt_tx_b++)
+#define INC_CNT_TX_C(priv) ((priv)->lre_stats.cnt_tx_c++)
+#define INC_CNT_RX_WRONG_LAN_AB(type, priv) (((type) == HSR_PT_SLAVE_A) ? \
+		(priv)->lre_stats.cnt_errwronglan_a++ : \
+		(priv)->lre_stats.cnt_errwronglan_b++)
+#define INC_CNT_RX_AB(type, priv) (((type) == HSR_PT_SLAVE_A) ? \
+		(priv)->lre_stats.cnt_rx_a++ : \
+		(priv)->lre_stats.cnt_rx_b++)
+#define INC_CNT_RX_C(priv) ((priv)->lre_stats.cnt_rx_c++)
+#define INC_CNT_RX_ERROR_AB(type, priv) (((type) == HSR_PT_SLAVE_A) ? \
+		(priv)->lre_stats.cnt_errors_a++ : \
+		(priv)->lre_stats.cnt_errors_b++)
+#define INC_CNT_OWN_RX_AB(type, priv) (((type) == HSR_PT_SLAVE_A) ? \
+		(priv)->lre_stats.cnt_own_rx_a++ : \
+		(priv)->lre_stats.cnt_own_rx_b++)
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 void hsr_debugfs_rename(struct net_device *dev);
@@ -291,4 +370,28 @@ static inline void hsr_debugfs_remove_root(void)
 {}
 #endif
 
-#endif /*  __HSR_PRIVATE_H */
+#ifdef	CONFIG_PROC_FS
+int hsr_create_procfs(struct hsr_priv *hsr, struct net_device *ndev);
+void hsr_remove_procfs(struct hsr_priv *hsr, struct net_device *ndev);
+#else
+static inline int hsr_create_procfs(struct hsr_priv *hsr,
+				    struct net_device *ndev)
+{
+	return 0;
+}
+
+static inline void hsr_remove_procfs(struct hsr_priv *hsr,
+				     struct net_device *ndev)
+{}
+#endif
+
+int hsr_lredev_attr_set(struct hsr_priv *hsr,
+			struct lredev_attr *attr);
+int hsr_lredev_attr_get(struct hsr_priv *hsr,
+			struct lredev_attr *attr);
+int hsr_lredev_get_node_table(struct hsr_priv *hsr,
+			      struct lre_node_table_entry table[],
+			      int size);
+int  hsr_lredev_get_lre_stats(struct hsr_priv *hsr,
+			      struct lre_stats *stats);
+#endif /* __HSR_PRP_MAIN_H */

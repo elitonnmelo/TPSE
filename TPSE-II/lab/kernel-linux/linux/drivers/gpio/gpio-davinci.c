@@ -24,6 +24,8 @@
 #include <linux/spinlock.h>
 #include <linux/pm_runtime.h>
 
+#include <asm-generic/gpio.h>
+
 #define MAX_REGS_BANKS 5
 #define MAX_INT_PER_BANK 32
 
@@ -215,6 +217,9 @@ static int davinci_gpio_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	if (WARN_ON(ARCH_NR_GPIOS < ngpio))
+		ngpio = ARCH_NR_GPIOS;
+
 	/*
 	 * If there are unbanked interrupts then the number of
 	 * interrupts is equal to number of gpios else all are banked so
@@ -250,7 +255,9 @@ static int davinci_gpio_probe(struct platform_device *pdev)
 	chips->chip.base = pdata->no_auto_base ? pdata->base : -1;
 
 #ifdef CONFIG_OF_GPIO
+	chips->chip.of_gpio_n_cells = 2;
 	chips->chip.parent = dev;
+	chips->chip.of_node = dev->of_node;
 	chips->chip.request = gpiochip_generic_request;
 	chips->chip.free = gpiochip_generic_free;
 #endif
@@ -322,7 +329,7 @@ static struct irq_chip gpio_irqchip = {
 	.irq_enable	= gpio_irq_enable,
 	.irq_disable	= gpio_irq_disable,
 	.irq_set_type	= gpio_irq_type,
-	.flags		= IRQCHIP_SET_TYPE_MASKED | IRQCHIP_SKIP_SET_WAKE,
+	.flags		= IRQCHIP_SET_TYPE_MASKED,
 };
 
 static void gpio_irq_handler(struct irq_desc *desc)
@@ -365,7 +372,8 @@ static void gpio_irq_handler(struct irq_desc *desc)
 			 */
 			hw_irq = (bank_num / 2) * 32 + bit;
 
-			generic_handle_domain_irq(d->irq_domain, hw_irq);
+			generic_handle_irq(
+				irq_find_mapping(d->irq_domain, hw_irq));
 		}
 	}
 	chained_irq_exit(irq_desc_get_chip(desc), desc);
@@ -531,7 +539,7 @@ static int davinci_gpio_irq_setup(struct platform_device *pdev)
 	}
 
 	/*
-	 * Arrange gpiod_to_irq() support, handling either direct IRQs or
+	 * Arrange gpio_to_irq() support, handling either direct IRQs or
 	 * banked IRQs.  Having GPIOs in the first GPIO bank use direct
 	 * IRQs, while the others use banked IRQs, would need some setup
 	 * tweaks to recognize hardware which can do that.
@@ -639,6 +647,9 @@ static void davinci_gpio_save_context(struct davinci_gpio_controller *chips,
 		context->set_falling = readl_relaxed(&g->set_falling);
 	}
 
+	/* Clear Bank interrupt enable bit */
+	writel_relaxed(0, base + BINTEN);
+
 	/* Clear all interrupt status registers */
 	writel_relaxed(GENMASK(31, 0), &g->intstat);
 }
@@ -670,7 +681,7 @@ static void davinci_gpio_restore_context(struct davinci_gpio_controller *chips,
 	}
 }
 
-static int davinci_gpio_suspend(struct device *dev)
+static int __maybe_unused davinci_gpio_suspend(struct device *dev)
 {
 	struct davinci_gpio_controller *chips = dev_get_drvdata(dev);
 	struct davinci_gpio_platform_data *pdata = dev_get_platdata(dev);
@@ -681,7 +692,7 @@ static int davinci_gpio_suspend(struct device *dev)
 	return 0;
 }
 
-static int davinci_gpio_resume(struct device *dev)
+static int __maybe_unused davinci_gpio_resume(struct device *dev)
 {
 	struct davinci_gpio_controller *chips = dev_get_drvdata(dev);
 	struct davinci_gpio_platform_data *pdata = dev_get_platdata(dev);
@@ -692,8 +703,8 @@ static int davinci_gpio_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(davinci_gpio_dev_pm_ops, davinci_gpio_suspend,
-			 davinci_gpio_resume);
+SIMPLE_DEV_PM_OPS(davinci_gpio_dev_pm_ops, davinci_gpio_suspend,
+		  davinci_gpio_resume);
 
 static const struct of_device_id davinci_gpio_ids[] = {
 	{ .compatible = "ti,keystone-gpio", keystone_gpio_get_irq_chip},
@@ -707,12 +718,12 @@ static struct platform_driver davinci_gpio_driver = {
 	.probe		= davinci_gpio_probe,
 	.driver		= {
 		.name		= "davinci_gpio",
-		.pm = pm_sleep_ptr(&davinci_gpio_dev_pm_ops),
+		.pm = &davinci_gpio_dev_pm_ops,
 		.of_match_table	= of_match_ptr(davinci_gpio_ids),
 	},
 };
 
-/*
+/**
  * GPIO driver registration needs to be done before machine_init functions
  * access GPIO. Hence davinci_gpio_drv_reg() is a postcore_initcall.
  */

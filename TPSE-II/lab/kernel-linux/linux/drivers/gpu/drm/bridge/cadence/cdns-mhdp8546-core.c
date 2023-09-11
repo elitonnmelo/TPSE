@@ -26,7 +26,6 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/irq.h>
-#include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
@@ -36,14 +35,13 @@
 #include <linux/slab.h>
 #include <linux/wait.h>
 
-#include <drm/display/drm_dp_helper.h>
-#include <drm/display/drm_hdcp_helper.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_atomic_state_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_connector.h>
-#include <drm/drm_edid.h>
+#include <drm/drm_crtc_helper.h>
+#include <drm/drm_dp_helper.h>
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
@@ -51,8 +49,10 @@
 #include <asm/unaligned.h>
 
 #include "cdns-mhdp8546-core.h"
-#include "cdns-mhdp8546-hdcp.h"
+
 #include "cdns-mhdp8546-j721e.h"
+
+static int cdns_mhdp_update_link_status(struct cdns_mhdp_device *mhdp);
 
 static int cdns_mhdp_mailbox_read(struct cdns_mhdp_device *mhdp)
 {
@@ -749,7 +749,7 @@ static int cdns_mhdp_fw_activate(const struct firmware *fw,
 	 * MHDP_HW_STOPPED happens only due to driver removal when
 	 * bridge should already be detached.
 	 */
-	if (mhdp->bridge_attached)
+	if (mhdp->bridge_attached && !mhdp->no_hpd)
 		writel(~(u32)CDNS_APB_INT_MASK_SW_EVENT_INT,
 		       mhdp->regs + CDNS_APB_INT_MASK);
 
@@ -845,7 +845,7 @@ static ssize_t cdns_mhdp_transfer(struct drm_dp_aux *aux,
 		ret = cdns_mhdp_dpcd_read(mhdp, msg->address,
 					  msg->buffer, msg->size);
 		if (ret) {
-			dev_err(mhdp->dev,
+			dev_dbg(mhdp->dev,
 				"Failed to read DPCD addr %u\n",
 				msg->address);
 
@@ -1554,13 +1554,13 @@ static u32 cdns_mhdp_get_bpp(struct cdns_mhdp_display_fmt *fmt)
 
 	switch (fmt->color_format) {
 	case DRM_COLOR_FORMAT_RGB444:
-	case DRM_COLOR_FORMAT_YCBCR444:
+	case DRM_COLOR_FORMAT_YCRCB444:
 		bpp = fmt->bpc * 3;
 		break;
-	case DRM_COLOR_FORMAT_YCBCR422:
+	case DRM_COLOR_FORMAT_YCRCB422:
 		bpp = fmt->bpc * 2;
 		break;
-	case DRM_COLOR_FORMAT_YCBCR420:
+	case DRM_COLOR_FORMAT_YCRCB420:
 		bpp = fmt->bpc * 3 / 2;
 		break;
 	default:
@@ -1616,51 +1616,10 @@ enum drm_mode_status cdns_mhdp_mode_valid(struct drm_connector *conn,
 	return MODE_OK;
 }
 
-static int cdns_mhdp_connector_atomic_check(struct drm_connector *conn,
-					    struct drm_atomic_state *state)
-{
-	struct cdns_mhdp_device *mhdp = connector_to_mhdp(conn);
-	struct drm_connector_state *old_state, *new_state;
-	struct drm_crtc_state *crtc_state;
-	u64 old_cp, new_cp;
-
-	if (!mhdp->hdcp_supported)
-		return 0;
-
-	old_state = drm_atomic_get_old_connector_state(state, conn);
-	new_state = drm_atomic_get_new_connector_state(state, conn);
-	old_cp = old_state->content_protection;
-	new_cp = new_state->content_protection;
-
-	if (old_state->hdcp_content_type != new_state->hdcp_content_type &&
-	    new_cp != DRM_MODE_CONTENT_PROTECTION_UNDESIRED) {
-		new_state->content_protection = DRM_MODE_CONTENT_PROTECTION_DESIRED;
-		goto mode_changed;
-	}
-
-	if (!new_state->crtc) {
-		if (old_cp == DRM_MODE_CONTENT_PROTECTION_ENABLED)
-			new_state->content_protection = DRM_MODE_CONTENT_PROTECTION_DESIRED;
-		return 0;
-	}
-
-	if (old_cp == new_cp ||
-	    (old_cp == DRM_MODE_CONTENT_PROTECTION_DESIRED &&
-	     new_cp == DRM_MODE_CONTENT_PROTECTION_ENABLED))
-		return 0;
-
-mode_changed:
-	crtc_state = drm_atomic_get_new_crtc_state(state, new_state->crtc);
-	crtc_state->mode_changed = true;
-
-	return 0;
-}
-
 static const struct drm_connector_helper_funcs cdns_mhdp_conn_helper_funcs = {
 	.detect_ctx = cdns_mhdp_connector_detect,
 	.get_modes = cdns_mhdp_get_modes,
 	.mode_valid = cdns_mhdp_mode_valid,
-	.atomic_check = cdns_mhdp_connector_atomic_check,
 };
 
 static const struct drm_connector_funcs cdns_mhdp_conn_funcs = {
@@ -1705,10 +1664,7 @@ static int cdns_mhdp_connector_init(struct cdns_mhdp_device *mhdp)
 		return ret;
 	}
 
-	if (mhdp->hdcp_supported)
-		ret = drm_connector_attach_content_protection_property(conn, true);
-
-	return ret;
+	return 0;
 }
 
 static int cdns_mhdp_attach(struct drm_bridge *bridge,
@@ -1720,15 +1676,10 @@ static int cdns_mhdp_attach(struct drm_bridge *bridge,
 
 	dev_dbg(mhdp->dev, "%s\n", __func__);
 
-	mhdp->aux.drm_dev = bridge->dev;
-	ret = drm_dp_aux_register(&mhdp->aux);
-	if (ret < 0)
-		return ret;
-
 	if (!(flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR)) {
 		ret = cdns_mhdp_connector_init(mhdp);
 		if (ret)
-			goto aux_unregister;
+			return ret;
 	}
 
 	spin_lock(&mhdp->start_lock);
@@ -1738,15 +1689,25 @@ static int cdns_mhdp_attach(struct drm_bridge *bridge,
 
 	spin_unlock(&mhdp->start_lock);
 
+	if (mhdp->no_hpd) {
+		ret = wait_event_timeout(mhdp->fw_load_wq,
+					 mhdp->hw_state == MHDP_HW_READY,
+					 msecs_to_jiffies(100));
+		if (ret == 0) {
+			dev_err(mhdp->dev, "%s: Timeout waiting for fw loading\n",
+				__func__);
+			return -ETIMEDOUT;
+		}
+
+		cdns_mhdp_update_link_status(mhdp);
+		return 0;
+	}
 	/* Enable SW event interrupts */
 	if (hw_ready)
 		writel(~(u32)CDNS_APB_INT_MASK_SW_EVENT_INT,
 		       mhdp->regs + CDNS_APB_INT_MASK);
 
 	return 0;
-aux_unregister:
-	drm_dp_aux_unregister(&mhdp->aux);
-	return ret;
 }
 
 static void cdns_mhdp_configure_video(struct cdns_mhdp_device *mhdp,
@@ -1768,8 +1729,8 @@ static void cdns_mhdp_configure_video(struct cdns_mhdp_device *mhdp,
 	 * If YCBCR supported and stream not SD, use ITU709
 	 * Need to handle ITU version with YCBCR420 when supported
 	 */
-	if ((pxlfmt == DRM_COLOR_FORMAT_YCBCR444 ||
-	     pxlfmt == DRM_COLOR_FORMAT_YCBCR422) && mode->crtc_vdisplay >= 720)
+	if ((pxlfmt == DRM_COLOR_FORMAT_YCRCB444 ||
+	     pxlfmt == DRM_COLOR_FORMAT_YCRCB422) && mode->crtc_vdisplay >= 720)
 		misc0 = DP_YCBCR_COEFFICIENTS_ITU709;
 
 	bpp = cdns_mhdp_get_bpp(&mhdp->display_fmt);
@@ -1779,15 +1740,15 @@ static void cdns_mhdp_configure_video(struct cdns_mhdp_device *mhdp,
 		pxl_repr = CDNS_DP_FRAMER_RGB << CDNS_DP_FRAMER_PXL_FORMAT;
 		misc0 |= DP_COLOR_FORMAT_RGB;
 		break;
-	case DRM_COLOR_FORMAT_YCBCR444:
+	case DRM_COLOR_FORMAT_YCRCB444:
 		pxl_repr = CDNS_DP_FRAMER_YCBCR444 << CDNS_DP_FRAMER_PXL_FORMAT;
 		misc0 |= DP_COLOR_FORMAT_YCbCr444 | DP_TEST_DYNAMIC_RANGE_CEA;
 		break;
-	case DRM_COLOR_FORMAT_YCBCR422:
+	case DRM_COLOR_FORMAT_YCRCB422:
 		pxl_repr = CDNS_DP_FRAMER_YCBCR422 << CDNS_DP_FRAMER_PXL_FORMAT;
 		misc0 |= DP_COLOR_FORMAT_YCbCr422 | DP_TEST_DYNAMIC_RANGE_CEA;
 		break;
-	case DRM_COLOR_FORMAT_YCBCR420:
+	case DRM_COLOR_FORMAT_YCRCB420:
 		pxl_repr = CDNS_DP_FRAMER_YCBCR420 << CDNS_DP_FRAMER_PXL_FORMAT;
 		break;
 	default:
@@ -1883,7 +1844,7 @@ static void cdns_mhdp_configure_video(struct cdns_mhdp_device *mhdp,
 	if (mhdp->display_fmt.y_only)
 		misc1 |= CDNS_DP_TEST_COLOR_FORMAT_RAW_Y_ONLY;
 	/* Use VSC SDP for Y420 */
-	if (pxlfmt == DRM_COLOR_FORMAT_YCBCR420)
+	if (pxlfmt == DRM_COLOR_FORMAT_YCRCB420)
 		misc1 = CDNS_DP_TEST_VSC_SDP;
 
 	cdns_mhdp_reg_write(mhdp, CDNS_DP_MSA_MISC(stream_id),
@@ -2011,15 +1972,6 @@ static void cdns_mhdp_atomic_enable(struct drm_bridge *bridge,
 	if (WARN_ON(!conn_state))
 		goto out;
 
-	if (mhdp->hdcp_supported &&
-	    mhdp->hw_state == MHDP_HW_READY &&
-	    conn_state->content_protection ==
-	    DRM_MODE_CONTENT_PROTECTION_DESIRED) {
-		mutex_unlock(&mhdp->link_mutex);
-		cdns_mhdp_hdcp_enable(mhdp, conn_state->hdcp_content_type);
-		mutex_lock(&mhdp->link_mutex);
-	}
-
 	crtc_state = drm_atomic_get_new_crtc_state(state, conn_state->crtc);
 	if (WARN_ON(!crtc_state))
 		goto out;
@@ -2063,9 +2015,6 @@ static void cdns_mhdp_atomic_disable(struct drm_bridge *bridge,
 
 	mutex_lock(&mhdp->link_mutex);
 
-	if (mhdp->hdcp_supported)
-		cdns_mhdp_hdcp_disable(mhdp);
-
 	mhdp->bridge_enabled = false;
 	cdns_mhdp_reg_read(mhdp, CDNS_DP_FRAMER_GLOBAL_CONFIG, &resp);
 	resp &= ~CDNS_DP_FRAMER_EN;
@@ -2090,8 +2039,6 @@ static void cdns_mhdp_detach(struct drm_bridge *bridge)
 	struct cdns_mhdp_device *mhdp = bridge_to_mhdp(bridge);
 
 	dev_dbg(mhdp->dev, "%s\n", __func__);
-
-	drm_dp_aux_unregister(&mhdp->aux);
 
 	spin_lock(&mhdp->start_lock);
 
@@ -2141,7 +2088,7 @@ cdns_mhdp_bridge_atomic_reset(struct drm_bridge *bridge)
 	if (!cdns_mhdp_state)
 		return NULL;
 
-	__drm_atomic_helper_bridge_reset(bridge, &cdns_mhdp_state->base);
+	 __drm_atomic_helper_bridge_reset(bridge, &cdns_mhdp_state->base);
 
 	return &cdns_mhdp_state->base;
 }
@@ -2256,7 +2203,16 @@ static int cdns_mhdp_update_link_status(struct cdns_mhdp_device *mhdp)
 
 	mutex_lock(&mhdp->link_mutex);
 
-	mhdp->plugged = cdns_mhdp_detect_hpd(mhdp, &hpd_pulse);
+	if (mhdp->no_hpd) {
+		ret = drm_dp_dpcd_read_link_status(&mhdp->aux, status);
+		hpd_pulse = false;
+		if (ret < 0)
+			mhdp->plugged = false;
+		else
+			mhdp->plugged = true;
+	} else {
+		mhdp->plugged = cdns_mhdp_detect_hpd(mhdp, &hpd_pulse);
+	}
 
 	if (!mhdp->plugged) {
 		cdns_mhdp_link_down(mhdp);
@@ -2356,6 +2312,7 @@ static irqreturn_t cdns_mhdp_irq_handler(int irq, void *data)
 	struct cdns_mhdp_device *mhdp = data;
 	u32 apb_stat, sw_ev0;
 	bool bridge_attached;
+	int ret;
 
 	apb_stat = readl(mhdp->regs + CDNS_APB_INT_STATUS);
 	if (!(apb_stat & CDNS_APB_INT_MASK_SW_EVENT_INT))
@@ -2374,52 +2331,18 @@ static irqreturn_t cdns_mhdp_irq_handler(int irq, void *data)
 	spin_unlock(&mhdp->start_lock);
 
 	if (bridge_attached && (sw_ev0 & CDNS_DPTX_HPD)) {
-		schedule_work(&mhdp->hpd_work);
-	}
-
-	if (sw_ev0 & ~CDNS_DPTX_HPD) {
-		mhdp->sw_events |= (sw_ev0 & ~CDNS_DPTX_HPD);
-		wake_up(&mhdp->sw_events_wq);
+		ret = cdns_mhdp_update_link_status(mhdp);
+		if (mhdp->connector.dev) {
+			if (ret < 0)
+				schedule_work(&mhdp->modeset_retry_work);
+			else
+				drm_kms_helper_hotplug_event(mhdp->bridge.dev);
+		} else {
+			drm_bridge_hpd_notify(&mhdp->bridge, cdns_mhdp_detect(mhdp));
+		}
 	}
 
 	return IRQ_HANDLED;
-}
-
-u32 cdns_mhdp_wait_for_sw_event(struct cdns_mhdp_device *mhdp, u32 event)
-{
-	u32 ret;
-
-	ret = wait_event_timeout(mhdp->sw_events_wq,
-				 mhdp->sw_events & event,
-				 msecs_to_jiffies(500));
-	if (!ret) {
-		dev_dbg(mhdp->dev, "SW event 0x%x timeout\n", event);
-		goto sw_event_out;
-	}
-
-	ret = mhdp->sw_events;
-	mhdp->sw_events &= ~event;
-
-sw_event_out:
-	return ret;
-}
-
-static void cdns_mhdp_hpd_work(struct work_struct *work)
-{
-	struct cdns_mhdp_device *mhdp = container_of(work,
-						     struct cdns_mhdp_device,
-						     hpd_work);
-	int ret;
-
-	ret = cdns_mhdp_update_link_status(mhdp);
-	if (mhdp->connector.dev) {
-		if (ret < 0)
-			schedule_work(&mhdp->modeset_retry_work);
-		else
-			drm_kms_helper_hotplug_event(mhdp->bridge.dev);
-	} else {
-		drm_bridge_hpd_notify(&mhdp->bridge, cdns_mhdp_detect(mhdp));
-	}
 }
 
 static int cdns_mhdp_probe(struct platform_device *pdev)
@@ -2451,19 +2374,12 @@ static int cdns_mhdp_probe(struct platform_device *pdev)
 	mhdp->aux.dev = dev;
 	mhdp->aux.transfer = cdns_mhdp_transfer;
 
+	mhdp->no_hpd = of_property_read_bool(dev->of_node, "cdns,no-hpd");
+
 	mhdp->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(mhdp->regs)) {
 		dev_err(dev, "Failed to get memory resource\n");
 		return PTR_ERR(mhdp->regs);
-	}
-
-	mhdp->sapb_regs = devm_platform_ioremap_resource_byname(pdev, "mhdptx-sapb");
-	if (IS_ERR(mhdp->sapb_regs)) {
-		mhdp->hdcp_supported = false;
-		dev_warn(dev,
-			 "Failed to get SAPB memory resource, HDCP not supported\n");
-	} else {
-		mhdp->hdcp_supported = true;
 	}
 
 	mhdp->phy = devm_of_phy_get_by_index(dev, pdev->dev.of_node, 0);
@@ -2526,8 +2442,9 @@ static int cdns_mhdp_probe(struct platform_device *pdev)
 
 	mhdp->bridge.of_node = pdev->dev.of_node;
 	mhdp->bridge.funcs = &cdns_mhdp_bridge_funcs;
-	mhdp->bridge.ops = DRM_BRIDGE_OP_DETECT | DRM_BRIDGE_OP_EDID |
-			   DRM_BRIDGE_OP_HPD;
+	mhdp->bridge.ops = DRM_BRIDGE_OP_DETECT | DRM_BRIDGE_OP_EDID;
+	if (!mhdp->no_hpd)
+		mhdp->bridge.ops |= DRM_BRIDGE_OP_HPD;
 	mhdp->bridge.type = DRM_MODE_CONNECTOR_DisplayPort;
 	if (mhdp->info)
 		mhdp->bridge.timings = mhdp->info->timings;
@@ -2540,17 +2457,12 @@ static int cdns_mhdp_probe(struct platform_device *pdev)
 
 	/* Initialize the work for modeset in case of link train failure */
 	INIT_WORK(&mhdp->modeset_retry_work, cdns_mhdp_modeset_retry_fn);
-	INIT_WORK(&mhdp->hpd_work, cdns_mhdp_hpd_work);
 
 	init_waitqueue_head(&mhdp->fw_load_wq);
-	init_waitqueue_head(&mhdp->sw_events_wq);
 
 	ret = cdns_mhdp_load_firmware(mhdp);
 	if (ret)
 		goto phy_exit;
-
-	if (mhdp->hdcp_supported)
-		cdns_mhdp_hdcp_init(mhdp);
 
 	drm_bridge_add(&mhdp->bridge);
 
@@ -2572,7 +2484,7 @@ clk_disable:
 
 static int cdns_mhdp_remove(struct platform_device *pdev)
 {
-	struct cdns_mhdp_device *mhdp = platform_get_drvdata(pdev);
+	struct cdns_mhdp_device *mhdp = dev_get_drvdata(&pdev->dev);
 	unsigned long timeout = msecs_to_jiffies(100);
 	bool stop_fw = false;
 	int ret;
@@ -2604,8 +2516,7 @@ static int cdns_mhdp_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 
 	cancel_work_sync(&mhdp->modeset_retry_work);
-	flush_work(&mhdp->hpd_work);
-	/* Ignoring mhdp->hdcp.check_work and mhdp->hdcp.prop_work here. */
+	flush_scheduled_work();
 
 	clk_disable_unprepare(mhdp->clk);
 

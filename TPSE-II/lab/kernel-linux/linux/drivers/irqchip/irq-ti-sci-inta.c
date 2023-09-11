@@ -64,6 +64,7 @@ struct ti_sci_inta_event_desc {
  * @events:		Array of event descriptors assigned to this vint.
  * @parent_virq:	Linux IRQ number that gets attached to parent
  * @vint_id:		TISCI vint ID
+ * @affinity_managed	flag to indicate VINT affinity is managed
  */
 struct ti_sci_inta_vint_desc {
 	struct irq_domain *domain;
@@ -72,13 +73,14 @@ struct ti_sci_inta_vint_desc {
 	struct ti_sci_inta_event_desc events[MAX_EVENTS_PER_VINT];
 	unsigned int parent_virq;
 	u16 vint_id;
+	bool affinity_managed;
 };
 
 /**
  * struct ti_sci_inta_irq_domain - Structure representing a TISCI based
  *				   Interrupt Aggregator IRQ domain.
  * @sci:		Pointer to TISCI handle
- * @vint:		TISCI resource pointer representing IA interrupts.
+ * @vint:		TISCI resource pointer representing IA inerrupts.
  * @global_event:	TISCI resource pointer representing global events.
  * @vint_list:		List of the vints active in the system
  * @vint_mutex:		Mutex to protect vint_list
@@ -147,7 +149,7 @@ static void ti_sci_inta_irq_handler(struct irq_desc *desc)
 	struct ti_sci_inta_vint_desc *vint_desc;
 	struct ti_sci_inta_irq_domain *inta;
 	struct irq_domain *domain;
-	unsigned int bit;
+	unsigned int virq, bit;
 	unsigned long val;
 
 	vint_desc = irq_desc_get_handler_data(desc);
@@ -159,8 +161,11 @@ static void ti_sci_inta_irq_handler(struct irq_desc *desc)
 	val = readq_relaxed(inta->base + vint_desc->vint_id * 0x1000 +
 			    VINT_STATUS_MASKED_OFFSET);
 
-	for_each_set_bit(bit, &val, MAX_EVENTS_PER_VINT)
-		generic_handle_domain_irq(domain, vint_desc->events[bit].hwirq);
+	for_each_set_bit(bit, &val, MAX_EVENTS_PER_VINT) {
+		virq = irq_find_mapping(domain, vint_desc->events[bit].hwirq);
+		if (virq)
+			generic_handle_irq(virq);
+	}
 
 	chained_irq_exit(irq_desc_get_chip(desc), desc);
 }
@@ -168,7 +173,7 @@ static void ti_sci_inta_irq_handler(struct irq_desc *desc)
 /**
  * ti_sci_inta_xlate_irq() - Translate hwirq to parent's hwirq.
  * @inta:	IRQ domain corresponding to Interrupt Aggregator
- * @vint_id:	Hardware irq corresponding to the above irq domain
+ * @irq:	Hardware irq corresponding to the above irq domain
  *
  * Return parent irq number if translation is available else -ENOENT.
  */
@@ -202,7 +207,8 @@ static int ti_sci_inta_xlate_irq(struct ti_sci_inta_irq_domain *inta,
  *
  * Return 0 if all went well else corresponding error value.
  */
-static struct ti_sci_inta_vint_desc *ti_sci_inta_alloc_parent_irq(struct irq_domain *domain)
+static struct ti_sci_inta_vint_desc *ti_sci_inta_alloc_parent_irq(struct irq_domain *domain,
+								  u16 vint_id)
 {
 	struct ti_sci_inta_irq_domain *inta = domain->host_data;
 	struct ti_sci_inta_vint_desc *vint_desc;
@@ -210,11 +216,6 @@ static struct ti_sci_inta_vint_desc *ti_sci_inta_alloc_parent_irq(struct irq_dom
 	struct device_node *parent_node;
 	unsigned int parent_virq;
 	int p_hwirq, ret;
-	u16 vint_id;
-
-	vint_id = ti_sci_get_free_resource(inta->vint);
-	if (vint_id == TI_SCI_RESOURCE_NULL)
-		return ERR_PTR(-EINVAL);
 
 	p_hwirq = ti_sci_inta_xlate_irq(inta, vint_id);
 	if (p_hwirq < 0) {
@@ -328,29 +329,42 @@ static struct ti_sci_inta_event_desc *ti_sci_inta_alloc_irq(struct irq_domain *d
 	struct ti_sci_inta_vint_desc *vint_desc = NULL;
 	struct ti_sci_inta_event_desc *event_desc;
 	u16 free_bit;
+	u16 vint_id;
 
 	mutex_lock(&inta->vint_mutex);
-	list_for_each_entry(vint_desc, &inta->vint_list, list) {
+	/*
+	 * Allocate new VINT each time until we runout, then start
+	 * aggregating
+	 */
+	vint_id = ti_sci_get_free_resource(inta->vint);
+	if (vint_id == TI_SCI_RESOURCE_NULL) {
+		list_for_each_entry(vint_desc, &inta->vint_list, list) {
+			if (vint_desc->affinity_managed)
+				continue;
+			free_bit = find_first_zero_bit(vint_desc->event_map,
+						       MAX_EVENTS_PER_VINT);
+			if (free_bit != MAX_EVENTS_PER_VINT) {
+				set_bit(free_bit, vint_desc->event_map);
+				break;
+			}
+		}
+	} else  {
+		vint_desc = ti_sci_inta_alloc_parent_irq(domain, vint_id);
+		if (IS_ERR(vint_desc)) {
+			event_desc = ERR_CAST(vint_desc);
+			goto unlock;
+		}
+
 		free_bit = find_first_zero_bit(vint_desc->event_map,
 					       MAX_EVENTS_PER_VINT);
-		if (free_bit != MAX_EVENTS_PER_VINT) {
-			set_bit(free_bit, vint_desc->event_map);
-			goto alloc_event;
-		}
+		set_bit(free_bit, vint_desc->event_map);
 	}
 
-	/* No free bits available. Allocate a new vint */
-	vint_desc = ti_sci_inta_alloc_parent_irq(domain);
-	if (IS_ERR(vint_desc)) {
-		event_desc = ERR_CAST(vint_desc);
+	if (free_bit == MAX_EVENTS_PER_VINT) {
+		event_desc = ERR_PTR(-EINVAL);
 		goto unlock;
 	}
 
-	free_bit = find_first_zero_bit(vint_desc->event_map,
-				       MAX_EVENTS_PER_VINT);
-	set_bit(free_bit, vint_desc->event_map);
-
-alloc_event:
 	event_desc = ti_sci_inta_alloc_event(vint_desc, free_bit, hwirq);
 	if (IS_ERR(event_desc))
 		clear_bit(free_bit, vint_desc->event_map);
@@ -429,6 +443,7 @@ static int ti_sci_inta_request_resources(struct irq_data *data)
 		return PTR_ERR(event_desc);
 
 	data->chip_data = event_desc;
+	irq_data_update_effective_affinity(data, cpu_online_mask);
 
 	return 0;
 }
@@ -499,11 +514,45 @@ static void ti_sci_inta_ack_irq(struct irq_data *data)
 		ti_sci_inta_manage_event(data, VINT_STATUS_OFFSET);
 }
 
+#ifdef CONFIG_SMP
+static int ti_sci_inta_set_affinity(struct irq_data *d,
+				    const struct cpumask *mask_val, bool force)
+{
+	struct ti_sci_inta_event_desc *event_desc;
+	struct ti_sci_inta_vint_desc *vint_desc;
+	struct irq_data *parent_irq_data;
+
+	if (cpumask_equal(irq_data_get_effective_affinity_mask(d), mask_val))
+		return 0;
+
+	event_desc = irq_data_get_irq_chip_data(d);
+	if (event_desc) {
+		vint_desc = to_vint_desc(event_desc, event_desc->vint_bit);
+
+		/*
+		 * Cannot set affinity if there is more than one event
+		 * mapped to same VINT
+		 */
+		if (bitmap_weight(vint_desc->event_map, MAX_EVENTS_PER_VINT) > 1)
+			return -EINVAL;
+
+		vint_desc->affinity_managed = true;
+
+		irq_data_update_effective_affinity(d, mask_val);
+		parent_irq_data = irq_get_irq_data(vint_desc->parent_virq);
+		if (parent_irq_data->chip->irq_set_affinity)
+			return parent_irq_data->chip->irq_set_affinity(parent_irq_data, mask_val, force);
+	}
+
+	return -EINVAL;
+}
+#else
 static int ti_sci_inta_set_affinity(struct irq_data *d,
 				    const struct cpumask *mask_val, bool force)
 {
 	return -EINVAL;
 }
+#endif
 
 /**
  * ti_sci_inta_set_type() - Update the trigger type of the irq.
@@ -595,7 +644,7 @@ static void ti_sci_inta_msi_set_desc(msi_alloc_info_t *arg,
 	struct platform_device *pdev = to_platform_device(desc->dev);
 
 	arg->desc = desc;
-	arg->hwirq = TO_HWIRQ(pdev->id, desc->msi_index);
+	arg->hwirq = TO_HWIRQ(pdev->id, desc->inta.dev_index);
 }
 
 static struct msi_domain_ops ti_sci_inta_msi_ops = {
@@ -650,6 +699,7 @@ static int ti_sci_inta_irq_domain_probe(struct platform_device *pdev)
 	struct device_node *parent_node, *node;
 	struct ti_sci_inta_irq_domain *inta;
 	struct device *dev = &pdev->dev;
+	struct resource *res;
 	int ret;
 
 	node = dev_of_node(dev);
@@ -693,7 +743,8 @@ static int ti_sci_inta_irq_domain_probe(struct platform_device *pdev)
 		return PTR_ERR(inta->global_event);
 	}
 
-	inta->base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	inta->base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(inta->base))
 		return PTR_ERR(inta->base);
 
@@ -743,3 +794,4 @@ module_platform_driver(ti_sci_inta_irq_domain_driver);
 
 MODULE_AUTHOR("Lokesh Vutla <lokeshvutla@ti.com>");
 MODULE_DESCRIPTION("K3 Interrupt Aggregator driver over TI SCI protocol");
+MODULE_LICENSE("GPL v2");

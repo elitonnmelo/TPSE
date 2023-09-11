@@ -65,11 +65,11 @@ properties:
       - ti,am4376-pruss0 # for AM437x SoC family and PRUSS unit 0
       - ti,am4376-pruss1 # for AM437x SoC family and PRUSS unit 1
       - ti,am5728-pruss  # for AM57xx SoC family
-      - ti,am625-pruss   # for K3 AM62x SoC family
-      - ti,am642-icssg   # for K3 AM64x SoC family
+      - ti,k2g-pruss     # for 66AK2G SoC family
       - ti,am654-icssg   # for K3 AM65x SoC family
       - ti,j721e-icssg   # for K3 J721E SoC family
-      - ti,k2g-pruss     # for 66AK2G SoC family
+      - ti,am642-icssg   # for K3 AM64x SoC family
+      - ti,am625-pruss  # for K3 AM62x SoC family
 
   reg:
     maxItems: 1
@@ -104,6 +104,7 @@ patternProperties:
     properties:
       reg:
         minItems: 2 # On AM437x one of two PRUSS units don't contain Shared RAM.
+        maxItems: 3
         items:
           - description: Address and size of the Data RAM0.
           - description: Address and size of the Data RAM1.
@@ -114,6 +115,7 @@ patternProperties:
 
       reg-names:
         minItems: 2
+        maxItems: 3
         items:
           - const: dram0
           - const: dram1
@@ -130,7 +132,6 @@ patternProperties:
       PRU-ICSS configuration space. CFG sub-module represented as a SysCon.
 
     type: object
-    additionalProperties: false
 
     properties:
       compatible:
@@ -241,6 +242,18 @@ patternProperties:
 
     type: object
 
+  ecap@[a-f0-9]+$:
+    description: |
+      Each PRUSS can optionally have an Enhanced Capture (eCAP) module that can
+      provide some time-stamp features using its capture input. The eCAP module
+      used within the PRU-ICSS is similar to other instances used within the PWM
+      subsystems.
+
+    allOf:
+      - $ref: /schemas/net/ti,pruss-ecap.yaml#
+
+    type: object
+
   mii-rt@[a-f0-9]+$:
     description: |
       Real-Time Ethernet to support multiple industrial communication protocols.
@@ -283,7 +296,10 @@ patternProperties:
       PRUSS INTC Node. Each PRUSS has a single interrupt controller instance
       that is common to all the PRU cores. This should be represented as an
       interrupt-controller node.
-    $ref: /schemas/interrupt-controller/ti,pruss-intc.yaml#
+
+    allOf:
+      - $ref: /schemas/interrupt-controller/ti,pruss-intc.yaml#
+
     type: object
 
   mdio@[a-f0-9]+$:
@@ -291,7 +307,10 @@ patternProperties:
       MDIO Node. Each PRUSS has an MDIO module that can be used to control
       external PHYs. The MDIO module used within the PRU-ICSS is an instance of
       the MDIO Controller used in TI Davinci SoCs.
-    $ref: /schemas/net/ti,davinci-mdio.yaml#
+
+    allOf:
+      - $ref: /schemas/net/ti,davinci-mdio.yaml#
+
     type: object
 
   "^(pru|rtu|txpru)@[0-9a-f]+$":
@@ -301,7 +320,10 @@ patternProperties:
       inactive by using the standard DT string property, "status". The ICSSG IP
       present on K3 SoCs have additional auxiliary PRU cores with slightly
       different IP integration.
-    $ref: /schemas/remoteproc/ti,pru-rproc.yaml#
+
+    allOf:
+      - $ref: /schemas/remoteproc/ti,pru-rproc.yaml#
+
     type: object
 
 required:
@@ -314,34 +336,23 @@ additionalProperties: false
 # Due to inability of correctly verifying sub-nodes with an @address through
 # the "required" list, the required sub-nodes below are commented out for now.
 
-# required:
+#required:
 # - memories
 # - interrupt-controller
 # - pru
 
-allOf:
-  - if:
-      properties:
-        compatible:
-          contains:
-            enum:
-              - ti,k2g-pruss
-              - ti,am654-icssg
-              - ti,j721e-icssg
-              - ti,am642-icssg
-    then:
-      required:
-        - power-domains
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            enum:
-              - ti,k2g-pruss
-    then:
-      required:
-        - dma-coherent
+if:
+  properties:
+    compatible:
+      contains:
+        enum:
+          - ti,k2g-pruss
+          - ti,am654-icssg
+          - ti,j721e-icssg
+          - ti,am642-icssg
+then:
+  required:
+    - power-domains
 
 examples:
   - |

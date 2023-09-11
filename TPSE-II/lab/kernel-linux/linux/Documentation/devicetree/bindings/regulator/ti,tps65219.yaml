@@ -36,20 +36,17 @@ properties:
       include/dt-bindings/interrupt-controller/irq.h
     const: 1
 
-  ti,power-button:
+  power-button:
     type: boolean
-    description: |
-      Optional property that sets the EN/PB/VSENSE pin to be a
+    description: Optional property that sets the EN/PB/VSENSE pin to be a
       power-button.
-      TPS65219 has a multipurpose pin called EN/PB/VSENSE that can be either
-      1. EN in which case it functions as an enable pin.
-      2. VSENSE which compares the voltages and triggers an automatic
-      on/off request.
-      3. PB in which case it can be configured to trigger an interrupt
-      to the SoC.
-      ti,power-button reflects the last one of those options
-      where the board has a button wired to the pin and triggers
-      an interrupt on pressing it.
+
+patternProperties:
+  "^buck[1-3]-supply$":
+    description: Input supply phandle of one regulator.
+
+  "^ldo[1-4]-supply$":
+    description: Input supply phandle of one regulator.
 
   regulators:
     type: object
@@ -63,6 +60,12 @@ properties:
         description:
           Properties for single LDO regulator.
 
+        properties:
+          regulator-name:
+            pattern: "^VDD[A-Z0-9_]+$"
+            description:
+              should be "VDDNAME_LDO1", ..., "VDDNAMELDO4"
+
         unevaluatedProperties: false
 
       "^buck[1-3]$":
@@ -71,21 +74,23 @@ properties:
         description:
           Properties for single BUCK regulator.
 
+        properties:
+          regulator-name:
+            pattern: "^VDD|VCC[A-Z0-9_]+$"
+            description:
+              should be like "VDD_BUCK1NAME", ..., "VCCBUCK_3NAME"
+
         unevaluatedProperties: false
 
     additionalProperties: false
-
-patternProperties:
-  "^buck[1-3]-supply$":
-    description: Input supply phandle of one regulator.
-
-  "^ldo[1-4]-supply$":
-    description: Input supply phandle of one regulator.
 
 required:
   - compatible
   - reg
   - interrupts
+  - interrupts
+  - interrupt-controller
+  - '#interrupt-cells'
   - regulators
 
 additionalProperties: false
@@ -112,7 +117,8 @@ examples:
 
             interrupt-parent = <&gic500>;
             interrupts = <GIC_SPI 224 IRQ_TYPE_LEVEL_HIGH>;
-            ti,power-button;
+            interrupt-controller;
+            #interrupt-cells = <1>;
 
             regulators {
                 buck1_reg: buck1 {

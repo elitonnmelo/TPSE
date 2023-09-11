@@ -9,7 +9,6 @@
 #include <linux/ip.h>
 #include <net/ipv6.h>
 #include <linux/netdevice.h>
-#include <crypto/aes.h>
 #include "chcr_ktls.h"
 
 static LIST_HEAD(uld_ctx_list);
@@ -33,6 +32,7 @@ static int chcr_get_nfrags_to_send(struct sk_buff *skb, u32 start, u32 len)
 
 	if (unlikely(start < skb_linear_data_len)) {
 		frag_size = min(len, skb_linear_data_len - start);
+		start = 0;
 	} else {
 		start -= skb_linear_data_len;
 
@@ -75,7 +75,7 @@ static int chcr_ktls_save_keys(struct chcr_ktls_info *tx_info,
 	unsigned char ghash_h[TLS_CIPHER_AES_GCM_256_TAG_SIZE];
 	struct tls12_crypto_info_aes_gcm_128 *info_128_gcm;
 	struct ktls_key_ctx *kctx = &tx_info->key_ctx;
-	struct crypto_aes_ctx aes_ctx;
+	struct crypto_cipher *cipher;
 	unsigned char *key, *salt;
 
 	switch (crypto_info->cipher_type) {
@@ -136,14 +136,18 @@ static int chcr_ktls_save_keys(struct chcr_ktls_info *tx_info,
 	/* Calculate the H = CIPH(K, 0 repeated 16 times).
 	 * It will go in key context
 	 */
-
-	ret = aes_expandkey(&aes_ctx, key, keylen);
-	if (ret)
+	cipher = crypto_alloc_cipher("aes", 0, 0);
+	if (IS_ERR(cipher)) {
+		ret = -ENOMEM;
 		goto out;
+	}
+
+	ret = crypto_cipher_setkey(cipher, key, keylen);
+	if (ret)
+		goto out1;
 
 	memset(ghash_h, 0, ghash_size);
-	aes_encrypt(&aes_ctx, ghash_h, ghash_h);
-	memzero_explicit(&aes_ctx, sizeof(aes_ctx));
+	crypto_cipher_encrypt_one(cipher, ghash_h, ghash_h);
 
 	/* fill the Key context */
 	if (direction == TLS_OFFLOAD_CTX_DIR_TX) {
@@ -152,7 +156,7 @@ static int chcr_ktls_save_keys(struct chcr_ktls_info *tx_info,
 						 key_ctx_size >> 4);
 	} else {
 		ret = -EINVAL;
-		goto out;
+		goto out1;
 	}
 
 	memcpy(kctx->salt, salt, tx_info->salt_size);
@@ -160,6 +164,8 @@ static int chcr_ktls_save_keys(struct chcr_ktls_info *tx_info,
 	memcpy(kctx->key + keylen, ghash_h, ghash_size);
 	tx_info->key_ctx_len = key_ctx_size;
 
+out1:
+	crypto_free_cipher(cipher);
 out:
 	return ret;
 }
@@ -483,7 +489,7 @@ static int chcr_ktls_dev_add(struct net_device *netdev, struct sock *sk,
 		tx_info->ip_family = AF_INET;
 #if IS_ENABLED(CONFIG_IPV6)
 	} else {
-		if (!ipv6_only_sock(sk) &&
+		if (!sk->sk_ipv6only &&
 		    ipv6_addr_type(&sk->sk_v6_daddr) == IPV6_ADDR_MAPPED) {
 			memcpy(daaddr, &sk->sk_daddr, 4);
 			tx_info->ip_family = AF_INET;
@@ -905,10 +911,10 @@ static int chcr_ktls_xmit_tcb_cpls(struct chcr_ktls_info *tx_info,
 	}
 	/* update receive window */
 	if (first_wr || tx_info->prev_win != tcp_win) {
-		chcr_write_cpl_set_tcb_ulp(tx_info, q, tx_info->tid, pos,
-					   TCB_RCV_WND_W,
-					   TCB_RCV_WND_V(TCB_RCV_WND_M),
-					   TCB_RCV_WND_V(tcp_win), 0);
+		pos = chcr_write_cpl_set_tcb_ulp(tx_info, q, tx_info->tid, pos,
+						 TCB_RCV_WND_W,
+						 TCB_RCV_WND_V(TCB_RCV_WND_M),
+						 TCB_RCV_WND_V(tcp_win), 0);
 		tx_info->prev_win = tcp_win;
 		cpl++;
 	}
@@ -943,7 +949,7 @@ chcr_ktls_get_tx_flits(u32 nr_frags, unsigned int key_ctx_len)
 }
 
 /*
- * chcr_ktls_check_tcp_options: To check if there is any TCP option available
+ * chcr_ktls_check_tcp_options: To check if there is any TCP option availbale
  * other than timestamp.
  * @skb - skb contains partial record..
  * return: 1 / 0
@@ -1012,7 +1018,7 @@ chcr_ktls_write_tcp_options(struct chcr_ktls_info *tx_info, struct sk_buff *skb,
 	/* packet length = eth hdr len + ip hdr len + tcp hdr len
 	 * (including options).
 	 */
-	pktlen = skb_tcp_all_headers(skb);
+	pktlen = skb_transport_offset(skb) + tcp_hdrlen(skb);
 
 	ctrl = sizeof(*cpl) + pktlen;
 	len16 = DIV_ROUND_UP(sizeof(*wr) + ctrl, 16);
@@ -1128,7 +1134,7 @@ static int chcr_ktls_xmit_wr_complete(struct sk_buff *skb,
 	}
 
 	if (unlikely(credits < ETHTXQ_STOP_THRES)) {
-		/* Credits are below the threshold values, stop the queue after
+		/* Credits are below the threshold vaues, stop the queue after
 		 * injecting the Work Request for this packet.
 		 */
 		chcr_eth_txq_stop(q);
@@ -1517,6 +1523,7 @@ static int chcr_ktls_tx_plaintxt(struct chcr_ktls_info *tx_info,
 	wr->op_to_compl = htonl(FW_WR_OP_V(FW_ULPTX_WR));
 	wr->flowid_len16 = htonl(wr_mid | FW_WR_LEN16_V(len16));
 	wr->cookie = 0;
+	pos += sizeof(*wr);
 	/* ULP_TXPKT */
 	ulptx = (struct ulp_txpkt *)(wr + 1);
 	ulptx->cmd_dest = htonl(ULPTX_CMD_V(ULP_TX_PKT) |
@@ -1839,7 +1846,9 @@ static int chcr_short_record_handler(struct chcr_ktls_info *tx_info,
 		 */
 		if (prior_data_len) {
 			int i = 0;
+			u8 *data = NULL;
 			skb_frag_t *f;
+			u8 *vaddr;
 			int frag_size = 0, frag_delta = 0;
 
 			while (remaining > 0) {
@@ -1851,24 +1860,24 @@ static int chcr_short_record_handler(struct chcr_ktls_info *tx_info,
 				i++;
 			}
 			f = &record->frags[i];
+			vaddr = kmap_atomic(skb_frag_page(f));
+
+			data = vaddr + skb_frag_off(f)  + remaining;
 			frag_delta = skb_frag_size(f) - remaining;
 
 			if (frag_delta >= prior_data_len) {
-				memcpy_from_page(prior_data, skb_frag_page(f),
-						 skb_frag_off(f) + remaining,
-						 prior_data_len);
+				memcpy(prior_data, data, prior_data_len);
+				kunmap_atomic(vaddr);
 			} else {
-				memcpy_from_page(prior_data, skb_frag_page(f),
-						 skb_frag_off(f) + remaining,
-						 frag_delta);
-
+				memcpy(prior_data, data, frag_delta);
+				kunmap_atomic(vaddr);
 				/* get the next page */
 				f = &record->frags[i + 1];
-
-				memcpy_from_page(prior_data + frag_delta,
-						 skb_frag_page(f),
-						 skb_frag_off(f),
-						 prior_data_len - frag_delta);
+				vaddr = kmap_atomic(skb_frag_page(f));
+				data = vaddr + skb_frag_off(f);
+				memcpy(prior_data + frag_delta,
+				       data, (prior_data_len - frag_delta));
+				kunmap_atomic(vaddr);
 			}
 			/* reset tcp_seq as per the prior_data_required len */
 			tcp_seq -= prior_data_len;
@@ -1905,7 +1914,7 @@ static int chcr_ktls_sw_fallback(struct sk_buff *skb,
 		return 0;
 
 	th = tcp_hdr(nskb);
-	skb_offset = skb_tcp_all_headers(nskb);
+	skb_offset =  skb_transport_offset(nskb) + tcp_hdrlen(nskb);
 	data_len = nskb->len - skb_offset;
 	skb_tx_timestamp(nskb);
 
@@ -1930,26 +1939,20 @@ static int chcr_ktls_xmit(struct sk_buff *skb, struct net_device *dev)
 	int data_len, qidx, ret = 0, mss;
 	struct tls_record_info *record;
 	struct chcr_ktls_info *tx_info;
-	struct net_device *tls_netdev;
 	struct tls_context *tls_ctx;
 	struct sge_eth_txq *q;
 	struct adapter *adap;
 	unsigned long flags;
 
 	tcp_seq = ntohl(th->seq);
-	skb_offset = skb_tcp_all_headers(skb);
+	skb_offset = skb_transport_offset(skb) + tcp_hdrlen(skb);
 	skb_data_len = skb->len - skb_offset;
 	data_len = skb_data_len;
 
 	mss = skb_is_gso(skb) ? skb_shinfo(skb)->gso_size : data_len;
 
 	tls_ctx = tls_get_ctx(skb->sk);
-	tls_netdev = rcu_dereference_bh(tls_ctx->netdev);
-	/* Don't quit on NULL: if tls_device_down is running in parallel,
-	 * netdev might become NULL, even if tls_is_skb_tx_device_offloaded was
-	 * true. Rather continue processing this packet.
-	 */
-	if (unlikely(tls_netdev && tls_netdev != dev))
+	if (unlikely(tls_ctx->netdev != dev))
 		goto out;
 
 	tx_ctx = chcr_get_ktls_tx_context(tls_ctx);
@@ -1975,7 +1978,7 @@ static int chcr_ktls_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	/* TCP segments can be in received either complete or partial.
 	 * chcr_end_part_handler will handle cases if complete record or end
-	 * part of the record is received. In case of partial end part of record,
+	 * part of the record is received. Incase of partial end part of record,
 	 * we will send the complete record again.
 	 */
 

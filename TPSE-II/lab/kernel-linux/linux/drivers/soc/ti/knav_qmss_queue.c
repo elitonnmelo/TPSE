@@ -67,7 +67,7 @@ static DEFINE_MUTEX(knav_dev_lock);
  * Newest followed by older ones. Search is done from start of the array
  * until a firmware file is found.
  */
-static const char * const knav_acc_firmwares[] = {"ks2_qmss_pdsp_acc48.bin"};
+const char *knav_acc_firmwares[] = {"ks2_qmss_pdsp_acc48.bin"};
 
 static bool device_ready;
 bool knav_qmss_device_ready(void)
@@ -758,9 +758,10 @@ void *knav_pool_create(const char *name,
 					int num_desc, int region_id)
 {
 	struct knav_region *reg_itr, *region = NULL;
-	struct knav_pool *pool, *pi = NULL, *iter;
+	struct knav_pool *pool, *pi;
 	struct list_head *node;
 	unsigned last_offset;
+	bool slot_found;
 	int ret;
 
 	if (!kdev)
@@ -789,7 +790,7 @@ void *knav_pool_create(const char *name,
 	}
 
 	pool->queue = knav_queue_open(name, KNAV_QUEUE_GP, 0);
-	if (IS_ERR(pool->queue)) {
+	if (IS_ERR_OR_NULL(pool->queue)) {
 		dev_err(kdev->dev,
 			"failed to open queue for pool(%s), error %ld\n",
 			name, PTR_ERR(pool->queue));
@@ -815,17 +816,18 @@ void *knav_pool_create(const char *name,
 	 * the request
 	 */
 	last_offset = 0;
+	slot_found = false;
 	node = &region->pools;
-	list_for_each_entry(iter, &region->pools, region_inst) {
-		if ((iter->region_offset - last_offset) >= num_desc) {
-			pi = iter;
+	list_for_each_entry(pi, &region->pools, region_inst) {
+		if ((pi->region_offset - last_offset) >= num_desc) {
+			slot_found = true;
 			break;
 		}
-		last_offset = iter->region_offset + iter->num_desc;
+		last_offset = pi->region_offset + pi->num_desc;
 	}
+	node = &pi->region_inst;
 
-	if (pi) {
-		node = &pi->region_inst;
+	if (slot_found) {
 		pool->region = region;
 		pool->num_desc = num_desc;
 		pool->region_offset = last_offset;
@@ -1264,10 +1266,10 @@ static int knav_setup_queue_range(struct knav_device *kdev,
 	if (range->num_irqs)
 		range->flags |= RANGE_HAS_IRQ;
 
-	if (of_property_read_bool(node, "qalloc-by-id"))
+	if (of_get_property(node, "qalloc-by-id", NULL))
 		range->flags |= RANGE_RESERVED;
 
-	if (of_property_present(node, "accumulator")) {
+	if (of_get_property(node, "accumulator", NULL)) {
 		ret = knav_init_acc_range(kdev, node, range);
 		if (ret < 0) {
 			devm_kfree(dev, range);
@@ -1783,9 +1785,9 @@ static int knav_queue_probe(struct platform_device *pdev)
 	INIT_LIST_HEAD(&kdev->pdsps);
 
 	pm_runtime_enable(&pdev->dev);
-	ret = pm_runtime_resume_and_get(&pdev->dev);
+	ret = pm_runtime_get_sync(&pdev->dev);
 	if (ret < 0) {
-		pm_runtime_disable(&pdev->dev);
+		pm_runtime_put_noidle(&pdev->dev);
 		dev_err(dev, "Failed to enable QMSS\n");
 		return ret;
 	}

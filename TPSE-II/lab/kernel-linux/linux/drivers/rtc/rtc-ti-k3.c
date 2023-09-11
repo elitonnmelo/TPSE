@@ -11,10 +11,10 @@
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
-#include <linux/sys_soc.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/rtc.h>
+#include <linux/sys_soc.h>
 
 /* Registers */
 #define REG_K3RTC_S_CNT_LSW		0x08
@@ -79,7 +79,7 @@ enum ti_k3_rtc_fields {
 	K3_RTC_MAX_FIELDS
 };
 
-static const struct reg_field ti_rtc_reg_fields[] = {
+static struct reg_field ti_rtc_reg_fields[] = {
 	[K3RTC_KICK0] = REG_FIELD(REG_K3RTC_KICK0, 0, 31),
 	[K3RTC_KICK1] = REG_FIELD(REG_K3RTC_KICK1, 0, 31),
 	[K3RTC_S_CNT_LSW] = REG_FIELD(REG_K3RTC_S_CNT_LSW, 0, 31),
@@ -128,8 +128,8 @@ static int k3rtc_field_read(struct ti_k3_rtc *priv, enum ti_k3_rtc_fields f)
 
 	ret = regmap_field_read(priv->r_fields[f], &val);
 	/*
-	 * We shouldn't be seeing regmap fail on us for mmio reads
-	 * This is possible if clock context fails, but that isn't the case for us
+	 * We should'nt be seeing regmap fail on us for mmio reads
+	 * This is possible if clk context fails, but that is'nt the case for us
 	 */
 	if (WARN_ON_ONCE(ret))
 		return ret;
@@ -203,12 +203,12 @@ static int k3rtc_configure(struct device *dev)
 	struct ti_k3_rtc *priv = dev_get_drvdata(dev);
 
 	/*
-	 * HWBUG: The compare state machine is broken if the RTC module
+	 * HWBUG: The compare statemachine is broken if the RTC module
 	 * is NOT unlocked in under one second of boot - which is pretty long
 	 * time from the perspective of Linux driver (module load, u-boot
 	 * shell all can take much longer than this.
 	 *
-	 * In such occurrence, it is assumed that the RTC module is unusable
+	 * In such occurrence, it is assumed that the RTC module is un-usable
 	 */
 	if (soc_device_match(has_erratum_i2327)) {
 		ret = k3rtc_check_unlocked(priv);
@@ -227,11 +227,11 @@ static int k3rtc_configure(struct device *dev)
 		}
 	}
 
-	/* Enable Shadow register sync on 32k clock boundary */
+	/* Enable Shadow register sync on 32k clk boundary */
 	k3rtc_field_write(priv, K3RTC_O32K_OSC_DEP_EN, 0x1);
 
 	/*
-	 * Wait at least clock sync time before proceeding further programming.
+	 * Wait at least clk sync time before proceeding further programming.
 	 * This ensures that the 32k based sync is active.
 	 */
 	usleep_range(priv->sync_timeout_us, priv->sync_timeout_us + 5);
@@ -284,7 +284,7 @@ static int ti_k3_rtc_set_time(struct device *dev, struct rtc_time *tm)
 
 	/*
 	 * Read operation on LSW will freeze the RTC, so to update
-	 * the time, we cannot use field operations. Just write since the
+	 * the time, we cannot use field operations. just write since the
 	 * reserved bits are ignored.
 	 */
 	regmap_write(priv->regmap, REG_K3RTC_S_CNT_LSW, seconds);
@@ -342,11 +342,11 @@ static int ti_k3_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alarm)
 	/* Make sure the alarm time is synced in */
 	ret = k3rtc_fence(priv);
 	if (ret) {
-		dev_err(dev, "Failed to fence(%d)! Potential config issue?\n", ret);
+		dev_err(dev, "Failed to fence(%d)!\n", ret);
 		return ret;
 	}
 
-	/* Alarm IRQ enable will do a sync */
+	/* Alarm irq enable will do a sync */
 	return ti_k3_rtc_alarm_irq_enable(dev, alarm->enabled);
 }
 
@@ -413,7 +413,7 @@ static irqreturn_t ti_k3_rtc_interrupt(s32 irq, void *dev_id)
 	 * If we clear the status prior to the first 32k clock edge,
 	 * the status bit is cleared, but the IRQ stays re-asserted.
 	 *
-	 * To prevent this condition, we need to wait for clock sync time.
+	 * To prevent this condition, we need to wait for clk sync time.
 	 * We can either do that by polling the 32k observability signal for
 	 * a toggle OR we could just sleep and let the processor do other
 	 * stuff.
@@ -487,8 +487,11 @@ static int ti_k3_rtc_scratch_read(void *priv_data, unsigned int offset,
 				  void *val, size_t bytes)
 {
 	struct ti_k3_rtc *priv = (struct ti_k3_rtc *)priv_data;
+	int ret;
 
-	return regmap_bulk_read(priv->regmap, REG_K3RTC_SCRATCH0 + offset, val, bytes / 4);
+	ret = regmap_bulk_read(priv->regmap, REG_K3RTC_SCRATCH0 + offset, val, bytes / 4);
+
+	return ret;
 }
 
 static int ti_k3_rtc_scratch_write(void *priv_data, unsigned int offset,
@@ -515,11 +518,24 @@ static struct nvmem_config ti_k3_rtc_nvmem_config = {
 
 static int k3rtc_get_32kclk(struct device *dev, struct ti_k3_rtc *priv)
 {
+	int ret;
 	struct clk *clk;
 
-	clk = devm_clk_get_enabled(dev, "osc32k");
-	if (IS_ERR(clk))
+	clk = devm_clk_get(dev, "osc32k");
+	if (IS_ERR(clk)) {
+		dev_err(dev, "No input reference 32k clock\n");
 		return PTR_ERR(clk);
+	}
+
+	ret = clk_prepare_enable(clk);
+	if (ret) {
+		dev_err(dev, "Failed to enable the reference 32k clock(%d)\n", ret);
+		return ret;
+	}
+
+	ret = devm_add_action_or_reset(dev, (void (*)(void *))clk_disable_unprepare, clk);
+	if (ret)
+		return ret;
 
 	priv->rate_32k = clk_get_rate(clk);
 
@@ -535,19 +551,29 @@ static int k3rtc_get_32kclk(struct device *dev, struct ti_k3_rtc *priv)
 	 */
 	priv->sync_timeout_us = (u32)(DIV_ROUND_UP_ULL(1000000, priv->rate_32k) * 4);
 
-	return 0;
+	return ret;
 }
 
 static int k3rtc_get_vbusclk(struct device *dev, struct ti_k3_rtc *priv)
 {
+	int ret;
 	struct clk *clk;
 
-	/* Note: VBUS isn't a context clock, it is needed for hardware operation */
-	clk = devm_clk_get_enabled(dev, "vbus");
-	if (IS_ERR(clk))
+	/* Note: VBUS is'nt a context clock, it is needed for hardware operation */
+	clk = devm_clk_get(dev, "vbus");
+	if (IS_ERR(clk)) {
+		dev_err(dev, "No input vbus clock\n");
 		return PTR_ERR(clk);
+	}
 
-	return 0;
+	ret = clk_prepare_enable(clk);
+	if (ret) {
+		dev_err(dev, "Failed to enable the vbus clock(%d)\n", ret);
+		return ret;
+	}
+
+	ret = devm_add_action_or_reset(dev, (void (*)(void *))clk_disable_unprepare, clk);
+	return ret;
 }
 
 static int ti_k3_rtc_probe(struct platform_device *pdev)
@@ -614,11 +640,12 @@ static int ti_k3_rtc_probe(struct platform_device *pdev)
 	else
 		device_set_wakeup_capable(dev, true);
 
-	ret = devm_rtc_register_device(priv->rtc_dev);
+	ret = rtc_register_device(priv->rtc_dev);
 	if (ret)
 		return ret;
 
-	return devm_rtc_nvmem_register(priv->rtc_dev, &ti_k3_rtc_nvmem_config);
+	ret = rtc_nvmem_register(priv->rtc_dev, &ti_k3_rtc_nvmem_config);
+	return ret;
 }
 
 static const struct of_device_id ti_k3_rtc_of_match_table[] = {
@@ -632,8 +659,7 @@ static int __maybe_unused ti_k3_rtc_suspend(struct device *dev)
 	struct ti_k3_rtc *priv = dev_get_drvdata(dev);
 
 	if (device_may_wakeup(dev))
-		return enable_irq_wake(priv->irq);
-
+		enable_irq_wake(priv->irq);
 	return 0;
 }
 

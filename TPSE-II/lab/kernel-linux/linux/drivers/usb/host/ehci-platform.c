@@ -43,6 +43,7 @@
 #define hcd_to_ehci_priv(h) ((struct ehci_platform_priv *)hcd_to_ehci(h)->priv)
 
 #define BCM_USB_FIFO_THRESHOLD	0x00800040
+#define bcm_iproc_insnreg01	hostpc[0]
 
 struct ehci_platform_priv {
 	struct clk *clks[EHCI_MAX_CLKS];
@@ -52,6 +53,8 @@ struct ehci_platform_priv {
 	struct timer_list poll_timer;
 	struct delayed_work poll_work;
 };
+
+static const char hcd_name[] = "ehci-platform";
 
 static int ehci_platform_reset(struct usb_hcd *hcd)
 {
@@ -78,7 +81,7 @@ static int ehci_platform_reset(struct usb_hcd *hcd)
 
 	if (of_device_is_compatible(pdev->dev.of_node, "brcm,xgs-iproc-ehci"))
 		ehci_writel(ehci, BCM_USB_FIFO_THRESHOLD,
-			    &ehci->regs->brcm_insnreg[1]);
+			    &ehci->regs->bcm_iproc_insnreg01);
 
 	return 0;
 }
@@ -283,9 +286,6 @@ static int ehci_platform_probe(struct platform_device *dev)
 		if (of_property_read_bool(dev->dev.of_node, "big-endian"))
 			ehci->big_endian_mmio = ehci->big_endian_desc = 1;
 
-		if (of_property_read_bool(dev->dev.of_node, "spurious-oc"))
-			ehci->spurious_oc = 1;
-
 		if (of_property_read_bool(dev->dev.of_node,
 					  "needs-reset-on-resume"))
 			priv->reset_on_resume = true;
@@ -333,8 +333,6 @@ static int ehci_platform_probe(struct platform_device *dev)
 		hcd->has_tt = 1;
 	if (pdata->reset_on_resume)
 		priv->reset_on_resume = true;
-	if (pdata->spurious_oc)
-		ehci->spurious_oc = 1;
 
 #ifndef CONFIG_USB_EHCI_BIG_ENDIAN_MMIO
 	if (ehci->big_endian_mmio) {
@@ -368,8 +366,6 @@ static int ehci_platform_probe(struct platform_device *dev)
 	hcd->rsrc_start = res_mem->start;
 	hcd->rsrc_len = resource_size(res_mem);
 
-	hcd->tpl_support = of_usb_host_tpl_support(dev->dev.of_node);
-
 	err = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (err)
 		goto err_power;
@@ -400,7 +396,7 @@ err_put_clks:
 	return err;
 }
 
-static void ehci_platform_remove(struct platform_device *dev)
+static int ehci_platform_remove(struct platform_device *dev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(dev);
 	struct usb_ehci_pdata *pdata = dev_get_platdata(&dev->dev);
@@ -424,6 +420,8 @@ static void ehci_platform_remove(struct platform_device *dev)
 
 	if (pdata == &ehci_platform_defaults)
 		dev->dev.platform_data = NULL;
+
+	return 0;
 }
 
 static int __maybe_unused ehci_platform_suspend(struct device *dev)
@@ -509,14 +507,13 @@ static SIMPLE_DEV_PM_OPS(ehci_platform_pm_ops, ehci_platform_suspend,
 static struct platform_driver ehci_platform_driver = {
 	.id_table	= ehci_platform_table,
 	.probe		= ehci_platform_probe,
-	.remove_new	= ehci_platform_remove,
+	.remove		= ehci_platform_remove,
 	.shutdown	= usb_hcd_platform_shutdown,
 	.driver		= {
 		.name	= "ehci-platform",
 		.pm	= pm_ptr(&ehci_platform_pm_ops),
 		.of_match_table = vt8500_ehci_ids,
 		.acpi_match_table = ACPI_PTR(ehci_acpi_match),
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	}
 };
 
@@ -524,6 +521,8 @@ static int __init ehci_platform_init(void)
 {
 	if (usb_disabled())
 		return -ENODEV;
+
+	pr_info("%s: " DRIVER_DESC "\n", hcd_name);
 
 	ehci_init_driver(&ehci_platform_hc_driver, &platform_overrides);
 	return platform_driver_register(&ehci_platform_driver);

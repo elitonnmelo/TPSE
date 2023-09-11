@@ -16,7 +16,7 @@
  * to local caches without needing to acquire swap_info
  * lock.  We do not reuse the returned slots directly but
  * move them back to the global pool in a batch.  This
- * allows the slots to coalesce and reduce fragmentation.
+ * allows the slots to coaellesce and reduce fragmentation.
  *
  * The swap entry allocated is marked with SWAP_HAS_CACHE
  * flag in map_count that prevents it from being allocated
@@ -30,7 +30,6 @@
 #include <linux/swap_slots.h>
 #include <linux/cpu.h>
 #include <linux/cpumask.h>
-#include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/mutex.h>
 #include <linux/mm.h>
@@ -44,6 +43,8 @@ static DEFINE_MUTEX(swap_slots_cache_mutex);
 static DEFINE_MUTEX(swap_slots_cache_enable_mutex);
 
 static void __drain_swap_slots_cache(unsigned int type);
+static void deactivate_swap_slots_cache(void);
+static void reactivate_swap_slots_cache(void);
 
 #define use_swap_slot_cache (swap_slot_cache_active && swap_slot_cache_enabled)
 #define SLOTS_CACHE 0x1
@@ -71,9 +72,9 @@ void disable_swap_slots_cache_lock(void)
 	swap_slot_cache_enabled = false;
 	if (swap_slot_cache_initialized) {
 		/* serialize with cpu hotplug operations */
-		cpus_read_lock();
+		get_online_cpus();
 		__drain_swap_slots_cache(SLOTS_CACHE|SLOTS_CACHE_RET);
-		cpus_read_unlock();
+		put_online_cpus();
 	}
 }
 
@@ -117,7 +118,7 @@ static int alloc_swap_slot_cache(unsigned int cpu)
 
 	/*
 	 * Do allocation outside swap_slots_cache_mutex
-	 * as kvzalloc could trigger reclaim and folio_alloc_swap,
+	 * as kvzalloc could trigger reclaim and get_swap_page,
 	 * which can lock swap_slots_cache_mutex.
 	 */
 	slots = kvcalloc(SWAP_SLOTS_CACHE_SIZE, sizeof(swp_entry_t),
@@ -192,7 +193,8 @@ static void drain_slots_cache_cpu(unsigned int cpu, unsigned int type,
 			cache->slots_ret = NULL;
 		}
 		spin_unlock_irq(&cache->free_lock);
-		kvfree(slots);
+		if (slots)
+			kvfree(slots);
 	}
 }
 
@@ -213,7 +215,7 @@ static void __drain_swap_slots_cache(unsigned int type)
 	 * this function can be invoked in the cpu
 	 * hot plug path:
 	 * cpu_up -> lock cpu_hotplug -> cpu hotplug state callback
-	 *   -> memory allocation -> direct reclaim -> folio_alloc_swap
+	 *   -> memory allocation -> direct reclaim -> get_swap_page
 	 *   -> drain_swap_slots_cache
 	 *
 	 * Hence the loop over current online cpu below could miss cpu that
@@ -258,7 +260,7 @@ out_unlock:
 /* called with swap slot cache's alloc lock held */
 static int refill_swap_slots_cache(struct swap_slots_cache *cache)
 {
-	if (!use_swap_slot_cache)
+	if (!use_swap_slot_cache || cache->nr)
 		return 0;
 
 	cache->cur = 0;
@@ -269,7 +271,7 @@ static int refill_swap_slots_cache(struct swap_slots_cache *cache)
 	return cache->nr;
 }
 
-void free_swap_slot(swp_entry_t entry)
+int free_swap_slot(swp_entry_t entry)
 {
 	struct swap_slots_cache *cache;
 
@@ -297,18 +299,20 @@ void free_swap_slot(swp_entry_t entry)
 direct_free:
 		swapcache_free_entries(&entry, 1);
 	}
+
+	return 0;
 }
 
-swp_entry_t folio_alloc_swap(struct folio *folio)
+swp_entry_t get_swap_page(struct page *page)
 {
 	swp_entry_t entry;
 	struct swap_slots_cache *cache;
 
 	entry.val = 0;
 
-	if (folio_test_large(folio)) {
-		if (IS_ENABLED(CONFIG_THP_SWAP) && arch_thp_swp_supported())
-			get_swap_pages(1, &entry, folio_nr_pages(folio));
+	if (PageTransHuge(page)) {
+		if (IS_ENABLED(CONFIG_THP_SWAP))
+			get_swap_pages(1, &entry, HPAGE_PMD_NR);
 		goto out;
 	}
 
@@ -342,8 +346,8 @@ repeat:
 
 	get_swap_pages(1, &entry, 1);
 out:
-	if (mem_cgroup_try_charge_swap(folio, entry)) {
-		put_swap_folio(folio, entry);
+	if (mem_cgroup_try_charge_swap(page, entry)) {
+		put_swap_page(page, entry);
 		entry.val = 0;
 	}
 	return entry;

@@ -9,7 +9,6 @@
 #include <linux/types.h>
 #include <linux/usb/typec.h>
 #include <linux/usb/pd.h>
-#include <linux/usb/role.h>
 
 /* -------------------------------------------------------------------------- */
 
@@ -287,12 +286,7 @@ struct ucsi {
 	struct ucsi_capability cap;
 	struct ucsi_connector *connector;
 
-	struct work_struct resume_work;
-	struct delayed_work work;
-	int work_count;
-#define UCSI_ROLE_SWITCH_RETRY_PER_HZ	10
-#define UCSI_ROLE_SWITCH_INTERVAL	(HZ / UCSI_ROLE_SWITCH_RETRY_PER_HZ)
-#define UCSI_ROLE_SWITCH_WAIT_COUNT	(10 * UCSI_ROLE_SWITCH_RETRY_PER_HZ)
+	struct work_struct work;
 
 	/* PPM Communication lock */
 	struct mutex ppm_lock;
@@ -305,6 +299,7 @@ struct ucsi {
 #define EVENT_PENDING	0
 #define COMMAND_PENDING	1
 #define ACK_PENDING	2
+#define EVENT_PROCESSING	3
 };
 
 #define UCSI_MAX_SVID		5
@@ -321,8 +316,6 @@ struct ucsi_connector {
 	struct mutex lock; /* port lock */
 	struct work_struct work;
 	struct completion complete;
-	struct workqueue_struct *wq;
-	struct list_head partner_tasks;
 
 	struct typec_port *port;
 	struct typec_partner *partner;
@@ -332,6 +325,7 @@ struct ucsi_connector {
 
 	struct typec_capability typec_cap;
 
+	u16 unprocessed_changes;
 	struct ucsi_connector_status status;
 	struct ucsi_connector_capability cap;
 	struct power_supply *psy;
@@ -339,16 +333,6 @@ struct ucsi_connector {
 	u32 rdo;
 	u32 src_pdos[PDO_MAX_OBJECTS];
 	int num_pdos;
-
-	/* USB PD objects */
-	struct usb_power_delivery *pd;
-	struct usb_power_delivery_capabilities *port_source_caps;
-	struct usb_power_delivery_capabilities *port_sink_caps;
-	struct usb_power_delivery *partner_pd;
-	struct usb_power_delivery_capabilities *partner_source_caps;
-	struct usb_power_delivery_capabilities *partner_sink_caps;
-
-	struct usb_role_switch *usb_role_sw;
 };
 
 int ucsi_send_command(struct ucsi *ucsi, u64 command,

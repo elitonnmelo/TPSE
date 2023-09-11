@@ -34,7 +34,6 @@
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/pinctrl/consumer.h>
-#include <linux/pinctrl/devinfo.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 #include <linux/pm_wakeirq.h>
@@ -78,27 +77,6 @@ void i2c_transfer_trace_unreg(void)
 	static_branch_dec(&i2c_trace_msg_key);
 }
 
-const char *i2c_freq_mode_string(u32 bus_freq_hz)
-{
-	switch (bus_freq_hz) {
-	case I2C_MAX_STANDARD_MODE_FREQ:
-		return "Standard Mode (100 kHz)";
-	case I2C_MAX_FAST_MODE_FREQ:
-		return "Fast Mode (400 kHz)";
-	case I2C_MAX_FAST_MODE_PLUS_FREQ:
-		return "Fast Mode Plus (1.0 MHz)";
-	case I2C_MAX_TURBO_MODE_FREQ:
-		return "Turbo Mode (1.4 MHz)";
-	case I2C_MAX_HIGH_SPEED_MODE_FREQ:
-		return "High Speed Mode (3.4 MHz)";
-	case I2C_MAX_ULTRA_FAST_MODE_FREQ:
-		return "Ultra Fast Mode (5.0 MHz)";
-	default:
-		return "Unknown Mode";
-	}
-}
-EXPORT_SYMBOL_GPL(i2c_freq_mode_string);
-
 const struct i2c_device_id *i2c_match_id(const struct i2c_device_id *id,
 						const struct i2c_client *client)
 {
@@ -113,25 +91,6 @@ const struct i2c_device_id *i2c_match_id(const struct i2c_device_id *id,
 	return NULL;
 }
 EXPORT_SYMBOL_GPL(i2c_match_id);
-
-const void *i2c_get_match_data(const struct i2c_client *client)
-{
-	struct i2c_driver *driver = to_i2c_driver(client->dev.driver);
-	const struct i2c_device_id *match;
-	const void *data;
-
-	data = device_get_match_data(&client->dev);
-	if (!data) {
-		match = i2c_match_id(driver->id_table, client);
-		if (!match)
-			return NULL;
-
-		data = (const void *)match->driver_data;
-	}
-
-	return data;
-}
-EXPORT_SYMBOL(i2c_get_match_data);
 
 static int i2c_device_match(struct device *dev, struct device_driver *drv)
 {
@@ -156,9 +115,9 @@ static int i2c_device_match(struct device *dev, struct device_driver *drv)
 	return 0;
 }
 
-static int i2c_device_uevent(const struct device *dev, struct kobj_uevent_env *env)
+static int i2c_device_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
-	const struct i2c_client *client = to_i2c_client(dev);
+	struct i2c_client *client = to_i2c_client(dev);
 	int rc;
 
 	rc = of_device_uevent_modalias(dev, env);
@@ -291,7 +250,7 @@ EXPORT_SYMBOL_GPL(i2c_generic_scl_recovery);
 int i2c_recover_bus(struct i2c_adapter *adap)
 {
 	if (!adap->bus_recovery_info)
-		return -EBUSY;
+		return -EOPNOTSUPP;
 
 	dev_dbg(&adap->dev, "Trying i2c bus recovery\n");
 	return adap->bus_recovery_info->recover_bus(adap);
@@ -302,9 +261,7 @@ static void i2c_gpio_init_pinctrl_recovery(struct i2c_adapter *adap)
 {
 	struct i2c_bus_recovery_info *bri = adap->bus_recovery_info;
 	struct device *dev = &adap->dev;
-	struct pinctrl *p = bri->pinctrl ?: dev_pinctrl(dev->parent);
-
-	bri->pinctrl = p;
+	struct pinctrl *p = bri->pinctrl;
 
 	/*
 	 * we can't change states without pinctrl, so remove the states if
@@ -422,8 +379,7 @@ static int i2c_gpio_init_recovery(struct i2c_adapter *adap)
 static int i2c_init_recovery(struct i2c_adapter *adap)
 {
 	struct i2c_bus_recovery_info *bri = adap->bus_recovery_info;
-	bool is_error_level = true;
-	char *err_str;
+	char *err_str, *err_level = KERN_ERR;
 
 	if (!bri)
 		return 0;
@@ -433,7 +389,7 @@ static int i2c_init_recovery(struct i2c_adapter *adap)
 
 	if (!bri->recover_bus) {
 		err_str = "no suitable method provided";
-		is_error_level = false;
+		err_level = KERN_DEBUG;
 		goto err;
 	}
 
@@ -460,10 +416,7 @@ static int i2c_init_recovery(struct i2c_adapter *adap)
 
 	return 0;
  err:
-	if (is_error_level)
-		dev_err(&adap->dev, "Not using recovery: %s\n", err_str);
-	else
-		dev_dbg(&adap->dev, "Not using recovery: %s\n", err_str);
+	dev_printk(err_level, &adap->dev, "Not using recovery: %s\n", err_str);
 	adap->bus_recovery_info = NULL;
 
 	return -EINVAL;
@@ -489,7 +442,6 @@ static int i2c_device_probe(struct device *dev)
 {
 	struct i2c_client	*client = i2c_verify_client(dev);
 	struct i2c_driver	*driver;
-	bool do_power_on;
 	int status;
 
 	if (!client)
@@ -510,11 +462,7 @@ static int i2c_device_probe(struct device *dev)
 			if (irq == -EINVAL || irq == -ENODATA)
 				irq = of_irq_get(dev->of_node, 0);
 		} else if (ACPI_COMPANION(dev)) {
-			bool wake_capable;
-
-			irq = i2c_acpi_get_irq(client, &wake_capable);
-			if (irq > 0 && wake_capable)
-				client->flags |= I2C_CLIENT_WAKE;
+			irq = i2c_acpi_get_irq(client);
 		}
 		if (irq == -EPROBE_DEFER) {
 			status = irq;
@@ -568,40 +516,29 @@ static int i2c_device_probe(struct device *dev)
 	if (status < 0)
 		goto err_clear_wakeup_irq;
 
-	do_power_on = !i2c_acpi_waive_d0_probe(dev);
-	status = dev_pm_domain_attach(&client->dev, do_power_on);
+	status = dev_pm_domain_attach(&client->dev, true);
 	if (status)
 		goto err_clear_wakeup_irq;
 
-	client->devres_group_id = devres_open_group(&client->dev, NULL,
-						    GFP_KERNEL);
-	if (!client->devres_group_id) {
-		status = -ENOMEM;
-		goto err_detach_pm_domain;
-	}
-
-	if (driver->probe)
-		status = driver->probe(client);
+	/*
+	 * When there are no more users of probe(),
+	 * rename probe_new to probe.
+	 */
+	if (driver->probe_new)
+		status = driver->probe_new(client);
+	else if (driver->probe)
+		status = driver->probe(client,
+				       i2c_match_id(driver->id_table, client));
 	else
 		status = -EINVAL;
 
-	/*
-	 * Note that we are not closing the devres group opened above so
-	 * even resources that were attached to the device after probe is
-	 * run are released when i2c_device_remove() is executed. This is
-	 * needed as some drivers would allocate additional resources,
-	 * for example when updating firmware.
-	 */
-
 	if (status)
-		goto err_release_driver_resources;
+		goto err_detach_pm_domain;
 
 	return 0;
 
-err_release_driver_resources:
-	devres_release_group(&client->dev, client->devres_group_id);
 err_detach_pm_domain:
-	dev_pm_domain_detach(&client->dev, do_power_on);
+	dev_pm_domain_detach(&client->dev, true);
 err_clear_wakeup_irq:
 	dev_pm_clear_wake_irq(&client->dev);
 	device_init_wakeup(&client->dev, false);
@@ -612,19 +549,20 @@ put_sync_adapter:
 	return status;
 }
 
-static void i2c_device_remove(struct device *dev)
+static int i2c_device_remove(struct device *dev)
 {
-	struct i2c_client	*client = to_i2c_client(dev);
+	struct i2c_client	*client = i2c_verify_client(dev);
 	struct i2c_driver	*driver;
+	int status = 0;
+
+	if (!client || !dev->driver)
+		return 0;
 
 	driver = to_i2c_driver(dev->driver);
 	if (driver->remove) {
 		dev_dbg(dev, "remove\n");
-
-		driver->remove(client);
+		status = driver->remove(client);
 	}
-
-	devres_release_group(&client->dev, client->devres_group_id);
 
 	dev_pm_domain_detach(&client->dev, true);
 
@@ -634,6 +572,8 @@ static void i2c_device_remove(struct device *dev)
 	client->irq = 0;
 	if (client->flags & I2C_CLIENT_HOST_NOTIFY)
 		pm_runtime_put(&client->adapter->dev);
+
+	return status;
 }
 
 static void i2c_device_shutdown(struct device *dev)
@@ -673,7 +613,7 @@ modalias_show(struct device *dev, struct device_attribute *attr, char *buf)
 	if (len != -ENODEV)
 		return len;
 
-	len = acpi_device_modalias(dev, buf, PAGE_SIZE - 1);
+	len = acpi_device_modalias(dev, buf, PAGE_SIZE -1);
 	if (len != -ENODEV)
 		return len;
 
@@ -949,7 +889,7 @@ i2c_new_client_device(struct i2c_adapter *adap, struct i2c_board_info const *inf
 		client->init_irq = i2c_dev_irq_from_resources(info->resources,
 							 info->num_resources);
 
-	strscpy(client->name, info->type, sizeof(client->name));
+	strlcpy(client->name, info->type, sizeof(client->name));
 
 	status = i2c_check_addr_validity(client->addr, client->flags);
 	if (status) {
@@ -969,30 +909,38 @@ i2c_new_client_device(struct i2c_adapter *adap, struct i2c_board_info const *inf
 	client->dev.of_node = of_node_get(info->of_node);
 	client->dev.fwnode = info->fwnode;
 
-	device_enable_async_suspend(&client->dev);
 	i2c_dev_set_name(adap, client, info);
 
-	if (info->swnode) {
-		status = device_add_software_node(&client->dev, info->swnode);
+	if (info->properties) {
+		status = device_add_properties(&client->dev, info->properties);
 		if (status) {
 			dev_err(&adap->dev,
-				"Failed to add software node to client %s: %d\n",
+				"Failed to add properties to client %s: %d\n",
 				client->name, status);
 			goto out_err_put_of_node;
 		}
 	}
 
+	if (adap->attach_ops &&
+	    adap->attach_ops->attach_client &&
+	    adap->attach_ops->attach_client(adap, info, client) != 0)
+		goto out_free_props;
+
 	status = device_register(&client->dev);
 	if (status)
-		goto out_remove_swnode;
+		goto out_detach_client;
 
 	dev_dbg(&adap->dev, "client [%s] registered with bus id %s\n",
 		client->name, dev_name(&client->dev));
 
 	return client;
 
-out_remove_swnode:
-	device_remove_software_node(&client->dev);
+out_detach_client:
+	if (adap->attach_ops && adap->attach_ops->detach_client)
+		adap->attach_ops->detach_client(adap, client);
+out_free_props:
+	if (info->properties)
+		device_remove_properties(&client->dev);
 out_err_put_of_node:
 	of_node_put(info->of_node);
 out_err:
@@ -1012,8 +960,16 @@ EXPORT_SYMBOL_GPL(i2c_new_client_device);
  */
 void i2c_unregister_device(struct i2c_client *client)
 {
+	struct i2c_adapter *adap;
+
 	if (IS_ERR_OR_NULL(client))
 		return;
+
+	adap = client->adapter;
+
+	if (adap->attach_ops &&
+	    adap->attach_ops->detach_client)
+		adap->attach_ops->detach_client(adap, client);
 
 	if (client->dev.of_node) {
 		of_node_clear_flag(client->dev.of_node, OF_POPULATED);
@@ -1022,39 +978,9 @@ void i2c_unregister_device(struct i2c_client *client)
 
 	if (ACPI_COMPANION(&client->dev))
 		acpi_device_clear_enumerated(ACPI_COMPANION(&client->dev));
-	device_remove_software_node(&client->dev);
 	device_unregister(&client->dev);
 }
 EXPORT_SYMBOL_GPL(i2c_unregister_device);
-
-/**
- * i2c_find_device_by_fwnode() - find an i2c_client for the fwnode
- * @fwnode: &struct fwnode_handle corresponding to the &struct i2c_client
- *
- * Look up and return the &struct i2c_client corresponding to the @fwnode.
- * If no client can be found, or @fwnode is NULL, this returns NULL.
- *
- * The user must call put_device(&client->dev) once done with the i2c client.
- */
-struct i2c_client *i2c_find_device_by_fwnode(struct fwnode_handle *fwnode)
-{
-	struct i2c_client *client;
-	struct device *dev;
-
-	if (!fwnode)
-		return NULL;
-
-	dev = bus_find_device_by_fwnode(&i2c_bus_type, fwnode);
-	if (!dev)
-		return NULL;
-
-	client = i2c_verify_client(dev);
-	if (!client)
-		put_device(dev);
-
-	return client;
-}
-EXPORT_SYMBOL(i2c_find_device_by_fwnode);
 
 
 static const struct i2c_device_id dummy_id[] = {
@@ -1062,7 +988,13 @@ static const struct i2c_device_id dummy_id[] = {
 	{ },
 };
 
-static int dummy_probe(struct i2c_client *client)
+static int dummy_probe(struct i2c_client *client,
+		       const struct i2c_device_id *id)
+{
+	return 0;
+}
+
+static int dummy_remove(struct i2c_client *client)
 {
 	return 0;
 }
@@ -1070,6 +1002,7 @@ static int dummy_probe(struct i2c_client *client)
 static struct i2c_driver dummy_driver = {
 	.driver.name	= "dummy",
 	.probe		= dummy_probe,
+	.remove		= dummy_remove,
 	.id_table	= dummy_id,
 };
 
@@ -1101,9 +1034,15 @@ struct i2c_client *i2c_new_dummy_device(struct i2c_adapter *adapter, u16 address
 }
 EXPORT_SYMBOL_GPL(i2c_new_dummy_device);
 
-static void devm_i2c_release_dummy(void *client)
+struct i2c_dummy_devres {
+	struct i2c_client *client;
+};
+
+static void devm_i2c_release_dummy(struct device *dev, void *res)
 {
-	i2c_unregister_device(client);
+	struct i2c_dummy_devres *this = res;
+
+	i2c_unregister_device(this->client);
 }
 
 /**
@@ -1120,16 +1059,20 @@ struct i2c_client *devm_i2c_new_dummy_device(struct device *dev,
 					     struct i2c_adapter *adapter,
 					     u16 address)
 {
+	struct i2c_dummy_devres *dr;
 	struct i2c_client *client;
-	int ret;
+
+	dr = devres_alloc(devm_i2c_release_dummy, sizeof(*dr), GFP_KERNEL);
+	if (!dr)
+		return ERR_PTR(-ENOMEM);
 
 	client = i2c_new_dummy_device(adapter, address);
-	if (IS_ERR(client))
-		return client;
-
-	ret = devm_add_action_or_reset(dev, devm_i2c_release_dummy, client);
-	if (ret)
-		return ERR_PTR(ret);
+	if (IS_ERR(client)) {
+		devres_free(dr);
+	} else {
+		dr->client = client;
+		devres_add(dev, dr);
+	}
 
 	return client;
 }
@@ -1462,7 +1405,7 @@ int i2c_handle_smbus_host_notify(struct i2c_adapter *adap, unsigned short addr)
 	if (irq <= 0)
 		return -ENXIO;
 
-	generic_handle_irq_safe(irq);
+	generic_handle_irq(irq);
 
 	return 0;
 }
@@ -1517,11 +1460,10 @@ static int i2c_register_adapter(struct i2c_adapter *adap)
 		goto out_list;
 	}
 
-	res = i2c_setup_smbus_alert(adap);
+	res = of_i2c_setup_smbus_alert(adap);
 	if (res)
 		goto out_reg;
 
-	device_enable_async_suspend(&adap->dev);
 	pm_runtime_no_callbacks(&adap->dev);
 	pm_suspend_ignore_children(&adap->dev, true);
 	pm_runtime_enable(&adap->dev);
@@ -1778,101 +1720,6 @@ void i2c_del_adapter(struct i2c_adapter *adap)
 	memset(&adap->dev, 0, sizeof(adap->dev));
 }
 EXPORT_SYMBOL(i2c_del_adapter);
-
-static void devm_i2c_del_adapter(void *adapter)
-{
-	i2c_del_adapter(adapter);
-}
-
-/**
- * devm_i2c_add_adapter - device-managed variant of i2c_add_adapter()
- * @dev: managing device for adding this I2C adapter
- * @adapter: the adapter to add
- * Context: can sleep
- *
- * Add adapter with dynamic bus number, same with i2c_add_adapter()
- * but the adapter will be auto deleted on driver detach.
- */
-int devm_i2c_add_adapter(struct device *dev, struct i2c_adapter *adapter)
-{
-	int ret;
-
-	ret = i2c_add_adapter(adapter);
-	if (ret)
-		return ret;
-
-	return devm_add_action_or_reset(dev, devm_i2c_del_adapter, adapter);
-}
-EXPORT_SYMBOL_GPL(devm_i2c_add_adapter);
-
-static int i2c_dev_or_parent_fwnode_match(struct device *dev, const void *data)
-{
-	if (dev_fwnode(dev) == data)
-		return 1;
-
-	if (dev->parent && dev_fwnode(dev->parent) == data)
-		return 1;
-
-	return 0;
-}
-
-/**
- * i2c_find_adapter_by_fwnode() - find an i2c_adapter for the fwnode
- * @fwnode: &struct fwnode_handle corresponding to the &struct i2c_adapter
- *
- * Look up and return the &struct i2c_adapter corresponding to the @fwnode.
- * If no adapter can be found, or @fwnode is NULL, this returns NULL.
- *
- * The user must call put_device(&adapter->dev) once done with the i2c adapter.
- */
-struct i2c_adapter *i2c_find_adapter_by_fwnode(struct fwnode_handle *fwnode)
-{
-	struct i2c_adapter *adapter;
-	struct device *dev;
-
-	if (!fwnode)
-		return NULL;
-
-	dev = bus_find_device(&i2c_bus_type, NULL, fwnode,
-			      i2c_dev_or_parent_fwnode_match);
-	if (!dev)
-		return NULL;
-
-	adapter = i2c_verify_adapter(dev);
-	if (!adapter)
-		put_device(dev);
-
-	return adapter;
-}
-EXPORT_SYMBOL(i2c_find_adapter_by_fwnode);
-
-/**
- * i2c_get_adapter_by_fwnode() - find an i2c_adapter for the fwnode
- * @fwnode: &struct fwnode_handle corresponding to the &struct i2c_adapter
- *
- * Look up and return the &struct i2c_adapter corresponding to the @fwnode,
- * and increment the adapter module's use count. If no adapter can be found,
- * or @fwnode is NULL, this returns NULL.
- *
- * The user must call i2c_put_adapter(adapter) once done with the i2c adapter.
- * Note that this is different from i2c_find_adapter_by_node().
- */
-struct i2c_adapter *i2c_get_adapter_by_fwnode(struct fwnode_handle *fwnode)
-{
-	struct i2c_adapter *adapter;
-
-	adapter = i2c_find_adapter_by_fwnode(fwnode);
-	if (!adapter)
-		return NULL;
-
-	if (!try_module_get(adapter->owner)) {
-		put_device(&adapter->dev);
-		adapter = NULL;
-	}
-
-	return adapter;
-}
-EXPORT_SYMBOL(i2c_get_adapter_by_fwnode);
 
 static void i2c_parse_timing(struct device *dev, char *prop_name, u32 *cur_val_p,
 			    u32 def_val, bool use_def)
@@ -2348,20 +2195,6 @@ int i2c_get_device_id(const struct i2c_client *client,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(i2c_get_device_id);
-
-/**
- * i2c_client_get_device_id - get the driver match table entry of a device
- * @client: the device to query. The device must be bound to a driver
- *
- * Returns a pointer to the matching entry if found, NULL otherwise.
- */
-const struct i2c_device_id *i2c_client_get_device_id(const struct i2c_client *client)
-{
-	const struct i2c_driver *drv = to_i2c_driver(client->dev.driver);
-
-	return i2c_match_id(drv->id_table, client);
-}
-EXPORT_SYMBOL_GPL(i2c_client_get_device_id);
 
 /* ----------------------------------------------------
  * the i2c address scanning function

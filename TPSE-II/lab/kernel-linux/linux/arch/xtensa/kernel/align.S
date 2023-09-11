@@ -22,17 +22,7 @@
 #include <asm/asmmacro.h>
 #include <asm/processor.h>
 
-#if XCHAL_UNALIGNED_LOAD_EXCEPTION || defined CONFIG_XTENSA_LOAD_STORE
-#define LOAD_EXCEPTION_HANDLER
-#endif
-
-#if XCHAL_UNALIGNED_STORE_EXCEPTION || defined LOAD_EXCEPTION_HANDLER
-#define ANY_EXCEPTION_HANDLER
-#endif
-
-#if XCHAL_HAVE_WINDOWED
-#define UNALIGNED_USER_EXCEPTION
-#endif
+#if XCHAL_UNALIGNED_LOAD_EXCEPTION || XCHAL_UNALIGNED_STORE_EXCEPTION
 
 /*  First-level exception handler for unaligned exceptions.
  *
@@ -67,6 +57,8 @@
  *  LE  mask 0 0 X X / shift left
  *  BE  shift left / mask 0 0 X X
  */
+
+#define UNALIGNED_USER_EXCEPTION
 
 #if XCHAL_HAVE_BE
 
@@ -109,7 +101,7 @@
  *
  *	       23			    0
  *		-----------------------------
- *	L8UI	xxxx xxxx 0000 ssss tttt 0010
+ *	res	          0000           0010
  *	L16UI	xxxx xxxx 0001 ssss tttt 0010
  *	L32I	xxxx xxxx 0010 ssss tttt 0010
  *	XXX	          0011 ssss tttt 0010
@@ -134,11 +126,9 @@
 
 #define OP0_L32I_N	0x8		/* load immediate narrow */
 #define OP0_S32I_N	0x9		/* store immediate narrow */
-#define OP0_LSAI	0x2		/* load/store */
 #define OP1_SI_MASK	0x4		/* OP1 bit set for stores */
 #define OP1_SI_BIT	2		/* OP1 bit number for stores */
 
-#define OP1_L8UI	0x0
 #define OP1_L32I	0x2
 #define OP1_L16UI	0x1
 #define OP1_L16SI	0x9
@@ -163,74 +153,60 @@
  */
 
 	.literal_position
-#ifdef CONFIG_XTENSA_LOAD_STORE
-ENTRY(fast_load_store)
-
-	call0	.Lsave_and_load_instruction
-
-	/* Analyze the instruction (load or store?). */
-
-	extui	a0, a4, INSN_OP0, 4	# get insn.op0 nibble
-
-#if XCHAL_HAVE_DENSITY
-	_beqi	a0, OP0_L32I_N, 1f	# L32I.N, jump
-#endif
-	bnei	a0, OP0_LSAI, .Linvalid_instruction
-	/* 'store indicator bit' set, jump */
-	bbsi.l	a4, OP1_SI_BIT + INSN_OP1, .Linvalid_instruction
-
-1:
-	movi	a3, ~3
-	and	a3, a3, a8		# align memory address
-
-	__ssa8	a8
-
-#ifdef CONFIG_MMU
-	/* l32e can't be used here even when it's available. */
-	/* TODO access_ok(a3) could be used here */
-	j	.Linvalid_instruction
-#endif
-	l32i	a5, a3, 0
-	l32i	a6, a3, 4
-	__src_b	a3, a5, a6		# a3 has the data word
-
-#if XCHAL_HAVE_DENSITY
-	addi	a7, a7, 2		# increment PC (assume 16-bit insn)
-	_beqi	a0, OP0_L32I_N, .Lload_w# l32i.n: jump
-	addi	a7, a7, 1
-#else
-	addi	a7, a7, 3
-#endif
-
-	extui	a5, a4, INSN_OP1, 4
-	_beqi	a5, OP1_L32I, .Lload_w
-	bnei	a5, OP1_L8UI, .Lload16
-	extui	a3, a3, 0, 8
-	j	.Lload_w
-
-ENDPROC(fast_load_store)
-#endif
-
-/*
- * Entry condition:
- *
- *   a0:	trashed, original value saved on stack (PT_AREG0)
- *   a1:	a1
- *   a2:	new stack pointer, original in DEPC
- *   a3:	a3
- *   depc:	a2, original value saved on stack (PT_DEPC)
- *   excsave_1:	dispatch table
- *
- *   PT_DEPC >= VALID_DOUBLE_EXCEPTION_ADDRESS: double exception, DEPC
- *	     <  VALID_DOUBLE_EXCEPTION_ADDRESS: regular exception
- */
-
-#ifdef ANY_EXCEPTION_HANDLER
 ENTRY(fast_unaligned)
 
-#if XCHAL_UNALIGNED_LOAD_EXCEPTION || XCHAL_UNALIGNED_STORE_EXCEPTION
+	/* Note: We don't expect the address to be aligned on a word
+	 *       boundary. After all, the processor generated that exception
+	 *       and it would be a hardware fault.
+	 */
 
-	call0	.Lsave_and_load_instruction
+	/* Save some working register */
+
+	s32i	a4, a2, PT_AREG4
+	s32i	a5, a2, PT_AREG5
+	s32i	a6, a2, PT_AREG6
+	s32i	a7, a2, PT_AREG7
+	s32i	a8, a2, PT_AREG8
+
+	rsr	a0, depc
+	s32i	a0, a2, PT_AREG2
+	s32i	a3, a2, PT_AREG3
+
+	rsr	a3, excsave1
+	movi	a4, fast_unaligned_fixup
+	s32i	a4, a3, EXC_TABLE_FIXUP
+
+	/* Keep value of SAR in a0 */
+
+	rsr	a0, sar
+	rsr	a8, excvaddr		# load unaligned memory address
+
+	/* Now, identify one of the following load/store instructions.
+	 *
+	 * The only possible danger of a double exception on the
+	 * following l32i instructions is kernel code in vmalloc
+	 * memory. The processor was just executing at the EPC_1
+	 * address, and indeed, already fetched the instruction.  That
+	 * guarantees a TLB mapping, which hasn't been replaced by
+	 * this unaligned exception handler that uses only static TLB
+	 * mappings. However, high-level interrupt handlers might
+	 * modify TLB entries, so for the generic case, we register a
+	 * TABLE_FIXUP handler here, too.
+	 */
+
+	/* a3...a6 saved on stack, a2 = SP */
+
+	/* Extract the instruction that caused the unaligned access. */
+
+	rsr	a7, epc1	# load exception address
+	movi	a3, ~3
+	and	a3, a3, a7	# mask lower bits
+
+	l32i	a4, a3, 0	# load 2 words
+	l32i	a5, a3, 4
+
+	__ssa8	a7
+	__src_b	a4, a4, a5	# a4 has the instruction
 
 	/* Analyze the instruction (load or store?). */
 
@@ -244,17 +220,12 @@ ENTRY(fast_unaligned)
 	/* 'store indicator bit' not set, jump */
 	_bbci.l	a4, OP1_SI_BIT + INSN_OP1, .Lload
 
-#endif
-#if XCHAL_UNALIGNED_STORE_EXCEPTION
-
 	/* Store: Jump to table entry to get the value in the source register.*/
 
 .Lstore:movi	a5, .Lstore_table	# table
 	extui	a6, a4, INSN_T, 4	# get source register
 	addx8	a5, a6, a5
 	jx	a5			# jump into table
-#endif
-#if XCHAL_UNALIGNED_LOAD_EXCEPTION
 
 	/* Load: Load memory address. */
 
@@ -276,7 +247,7 @@ ENTRY(fast_unaligned)
 	addi	a7, a7, 2		# increment PC (assume 16-bit insn)
 
 	extui	a5, a4, INSN_OP0, 4
-	_beqi	a5, OP0_L32I_N, .Lload_w# l32i.n: jump
+	_beqi	a5, OP0_L32I_N, 1f	# l32i.n: jump
 
 	addi	a7, a7, 1
 #else
@@ -284,26 +255,21 @@ ENTRY(fast_unaligned)
 #endif
 
 	extui	a5, a4, INSN_OP1, 4
-	_beqi	a5, OP1_L32I, .Lload_w	# l32i: jump
-#endif
-#ifdef LOAD_EXCEPTION_HANDLER
-.Lload16:
+	_beqi	a5, OP1_L32I, 1f	# l32i: jump
+
 	extui	a3, a3, 0, 16		# extract lower 16 bits
-	_beqi	a5, OP1_L16UI, .Lload_w
+	_beqi	a5, OP1_L16UI, 1f
 	addi	a5, a5, -OP1_L16SI
-	_bnez	a5, .Linvalid_instruction
+	_bnez	a5, .Linvalid_instruction_load
 
 	/* sign extend value */
-#if XCHAL_HAVE_SEXT
-	sext	a3, a3, 15
-#else
+
 	slli	a3, a3, 16
 	srai	a3, a3, 16
-#endif
 
 	/* Set target register. */
 
-.Lload_w:
+1:
 	extui	a4, a4, INSN_T, 4	# extract target register
 	movi	a5, .Lload_table
 	addx8	a4, a4, a5
@@ -327,32 +293,30 @@ ENTRY(fast_unaligned)
 	mov	a13, a3		;	_j .Lexit;	.align 8
 	mov	a14, a3		;	_j .Lexit;	.align 8
 	mov	a15, a3		;	_j .Lexit;	.align 8
-#endif
-#if XCHAL_UNALIGNED_STORE_EXCEPTION
-.Lstore_table:
-	l32i	a3, a2, PT_AREG0;	_j .Lstore_w;	.align 8
-	mov	a3, a1;			_j .Lstore_w;	.align 8	# fishy??
-	l32i	a3, a2, PT_AREG2;	_j .Lstore_w;	.align 8
-	l32i	a3, a2, PT_AREG3;	_j .Lstore_w;	.align 8
-	l32i	a3, a2, PT_AREG4;	_j .Lstore_w;	.align 8
-	l32i	a3, a2, PT_AREG5;	_j .Lstore_w;	.align 8
-	l32i	a3, a2, PT_AREG6;	_j .Lstore_w;	.align 8
-	l32i	a3, a2, PT_AREG7;	_j .Lstore_w;	.align 8
-	l32i	a3, a2, PT_AREG8;	_j .Lstore_w;	.align 8
-	mov	a3, a9		;	_j .Lstore_w;	.align 8
-	mov	a3, a10		;	_j .Lstore_w;	.align 8
-	mov	a3, a11		;	_j .Lstore_w;	.align 8
-	mov	a3, a12		;	_j .Lstore_w;	.align 8
-	mov	a3, a13		;	_j .Lstore_w;	.align 8
-	mov	a3, a14		;	_j .Lstore_w;	.align 8
-	mov	a3, a15		;	_j .Lstore_w;	.align 8
-#endif
 
-#ifdef ANY_EXCEPTION_HANDLER
+.Lstore_table:
+	l32i	a3, a2, PT_AREG0;	_j 1f;	.align 8
+	mov	a3, a1;			_j 1f;	.align 8	# fishy??
+	l32i	a3, a2, PT_AREG2;	_j 1f;	.align 8
+	l32i	a3, a2, PT_AREG3;	_j 1f;	.align 8
+	l32i	a3, a2, PT_AREG4;	_j 1f;	.align 8
+	l32i	a3, a2, PT_AREG5;	_j 1f;	.align 8
+	l32i	a3, a2, PT_AREG6;	_j 1f;	.align 8
+	l32i	a3, a2, PT_AREG7;	_j 1f;	.align 8
+	l32i	a3, a2, PT_AREG8;	_j 1f;	.align 8
+	mov	a3, a9		;	_j 1f;	.align 8
+	mov	a3, a10		;	_j 1f;	.align 8
+	mov	a3, a11		;	_j 1f;	.align 8
+	mov	a3, a12		;	_j 1f;	.align 8
+	mov	a3, a13		;	_j 1f;	.align 8
+	mov	a3, a14		;	_j 1f;	.align 8
+	mov	a3, a15		;	_j 1f;	.align 8
+
 	/* We cannot handle this exception. */
 
 	.extern _kernel_exception
-.Linvalid_instruction:
+.Linvalid_instruction_load:
+.Linvalid_instruction_store:
 
 	movi	a4, 0
 	rsr	a3, excsave1
@@ -360,7 +324,6 @@ ENTRY(fast_unaligned)
 
 	/* Restore a4...a8 and SAR, set SP, and jump to default exception. */
 
-	l32i	a0, a2, PT_SAR
 	l32i	a8, a2, PT_AREG8
 	l32i	a7, a2, PT_AREG7
 	l32i	a6, a2, PT_AREG6
@@ -377,11 +340,9 @@ ENTRY(fast_unaligned)
 
 2:	movi	a0, _user_exception
 	jx	a0
-#endif
-#if XCHAL_UNALIGNED_STORE_EXCEPTION
 
-	# a7: instruction pointer, a4: instruction, a3: value
-.Lstore_w:
+1: 	# a7: instruction pointer, a4: instruction, a3: value
+
 	movi	a6, 0			# mask: ffffffff:00000000
 
 #if XCHAL_HAVE_DENSITY
@@ -398,7 +359,7 @@ ENTRY(fast_unaligned)
 
 	extui	a5, a4, INSN_OP1, 4	# extract OP1
 	_beqi	a5, OP1_S32I, 1f	# jump if 32 bit store
-	_bnei	a5, OP1_S16I, .Linvalid_instruction
+	_bnei	a5, OP1_S16I, .Linvalid_instruction_store
 
 	movi	a5, -1
 	__extl	a3, a3			# get 16-bit value
@@ -443,8 +404,7 @@ ENTRY(fast_unaligned)
 #else
 	s32i	a6, a4, 4
 #endif
-#endif
-#ifdef ANY_EXCEPTION_HANDLER
+
 .Lexit:
 #if XCHAL_HAVE_LOOPS
 	rsr	a4, lend		# check if we reached LEND
@@ -472,7 +432,6 @@ ENTRY(fast_unaligned)
 
 	/* Restore working register */
 
-	l32i	a0, a2, PT_SAR
 	l32i	a8, a2, PT_AREG8
 	l32i	a7, a2, PT_AREG7
 	l32i	a6, a2, PT_AREG6
@@ -487,59 +446,6 @@ ENTRY(fast_unaligned)
 	l32i	a2, a2, PT_AREG2
 	rfe
 
-	.align	4
-.Lsave_and_load_instruction:
-
-	/* Save some working register */
-
-	s32i	a3, a2, PT_AREG3
-	s32i	a4, a2, PT_AREG4
-	s32i	a5, a2, PT_AREG5
-	s32i	a6, a2, PT_AREG6
-	s32i	a7, a2, PT_AREG7
-	s32i	a8, a2, PT_AREG8
-
-	rsr	a4, depc
-	s32i	a4, a2, PT_AREG2
-
-	rsr	a5, sar
-	s32i	a5, a2, PT_SAR
-
-	rsr	a3, excsave1
-	movi	a4, fast_unaligned_fixup
-	s32i	a4, a3, EXC_TABLE_FIXUP
-
-	rsr	a8, excvaddr		# load unaligned memory address
-
-	/* Now, identify one of the following load/store instructions.
-	 *
-	 * The only possible danger of a double exception on the
-	 * following l32i instructions is kernel code in vmalloc
-	 * memory. The processor was just executing at the EPC_1
-	 * address, and indeed, already fetched the instruction.  That
-	 * guarantees a TLB mapping, which hasn't been replaced by
-	 * this unaligned exception handler that uses only static TLB
-	 * mappings. However, high-level interrupt handlers might
-	 * modify TLB entries, so for the generic case, we register a
-	 * TABLE_FIXUP handler here, too.
-	 */
-
-	/* a3...a6 saved on stack, a2 = SP */
-
-	/* Extract the instruction that caused the unaligned access. */
-
-	rsr	a7, epc1	# load exception address
-	movi	a3, ~3
-	and	a3, a3, a7	# mask lower bits
-
-	l32i	a4, a3, 0	# load 2 words
-	l32i	a5, a3, 4
-
-	__ssa8	a7
-	__src_b	a4, a4, a5	# a4 has the instruction
-
-	ret
-#endif
 ENDPROC(fast_unaligned)
 
 ENTRY(fast_unaligned_fixup)
@@ -551,11 +457,10 @@ ENTRY(fast_unaligned_fixup)
 	l32i	a7, a2, PT_AREG7
 	l32i	a6, a2, PT_AREG6
 	l32i	a5, a2, PT_AREG5
-	l32i	a4, a2, PT_SAR
-	l32i	a0, a2, PT_AREG2
-	wsr	a4, sar
-	wsr	a0, depc			# restore depc and a0
 	l32i	a4, a2, PT_AREG4
+	l32i	a0, a2, PT_AREG2
+	xsr	a0, depc			# restore depc and a0
+	wsr	a0, sar
 
 	rsr	a0, exccause
 	s32i	a0, a2, PT_DEPC			# mark as a regular exception
@@ -576,4 +481,5 @@ ENTRY(fast_unaligned_fixup)
 	jx	a0
 
 ENDPROC(fast_unaligned_fixup)
-#endif
+
+#endif /* XCHAL_UNALIGNED_LOAD_EXCEPTION || XCHAL_UNALIGNED_STORE_EXCEPTION */

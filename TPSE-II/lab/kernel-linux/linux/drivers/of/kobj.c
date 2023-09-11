@@ -5,13 +5,13 @@
 #include "of_private.h"
 
 /* true when node is initialized */
-static int of_node_is_initialized(const struct device_node *node)
+static int of_node_is_initialized(struct device_node *node)
 {
 	return node && node->kobj.state_initialized;
 }
 
 /* true when node is attached (i.e. present on sysfs) */
-int of_node_is_attached(const struct device_node *node)
+int of_node_is_attached(struct device_node *node)
 {
 	return node && node->kobj.state_in_sysfs;
 }
@@ -24,7 +24,7 @@ static void of_node_release(struct kobject *kobj)
 }
 #endif /* CONFIG_OF_DYNAMIC */
 
-const struct kobj_type of_node_ktype = {
+struct kobj_type of_node_ktype = {
 	.release = of_node_release,
 };
 
@@ -112,7 +112,7 @@ void __of_update_property_sysfs(struct device_node *np, struct property *newprop
 	__of_add_property_sysfs(np, newprop);
 }
 
-int __of_attach_node_sysfs(struct device_node *np)
+int __of_attach_node_post(struct device_node *np)
 {
 	const char *name;
 	struct kobject *parent;
@@ -146,7 +146,7 @@ int __of_attach_node_sysfs(struct device_node *np)
 	return 0;
 }
 
-void __of_detach_node_sysfs(struct device_node *np)
+void __of_detach_node_post(struct device_node *np)
 {
 	struct property *pp;
 

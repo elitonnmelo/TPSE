@@ -151,7 +151,7 @@ static void _fusb302_log(struct fusb302_chip *chip, const char *fmt,
 
 	if (fusb302_log_full(chip)) {
 		chip->logbuffer_head = max(chip->logbuffer_head - 1, 0);
-		strscpy(tmpbuffer, "overflow", sizeof(tmpbuffer));
+		strlcpy(tmpbuffer, "overflow", sizeof(tmpbuffer));
 	}
 
 	if (chip->logbuffer_head < 0 ||
@@ -190,7 +190,7 @@ static void fusb302_log(struct fusb302_chip *chip, const char *fmt, ...)
 
 static int fusb302_debug_show(struct seq_file *s, void *v)
 {
-	struct fusb302_chip *chip = s->private;
+	struct fusb302_chip *chip = (struct fusb302_chip *)s->private;
 	int tail;
 
 	mutex_lock(&chip->logbuffer_lock);
@@ -213,9 +213,8 @@ static void fusb302_debugfs_init(struct fusb302_chip *chip)
 
 	mutex_init(&chip->logbuffer_lock);
 	snprintf(name, NAME_MAX, "fusb302-%s", dev_name(chip->dev));
-	chip->dentry = debugfs_create_dir(name, usb_debug_root);
-	debugfs_create_file("log", S_IFREG | 0444, chip->dentry, chip,
-			    &fusb302_debug_fops);
+	chip->dentry = debugfs_create_file(name, S_IFREG | 0444, usb_debug_root,
+					   chip, &fusb302_debug_fops);
 }
 
 static void fusb302_debugfs_exit(struct fusb302_chip *chip)
@@ -344,11 +343,12 @@ static int fusb302_sw_reset(struct fusb302_chip *chip)
 	return ret;
 }
 
-static int fusb302_enable_tx_auto_retries(struct fusb302_chip *chip, u8 retry_count)
+static int fusb302_enable_tx_auto_retries(struct fusb302_chip *chip)
 {
 	int ret = 0;
 
-	ret = fusb302_i2c_set_bits(chip, FUSB_REG_CONTROL3, retry_count |
+	ret = fusb302_i2c_set_bits(chip, FUSB_REG_CONTROL3,
+				   FUSB_REG_CONTROL3_N_RETRIES_3 |
 				   FUSB_REG_CONTROL3_AUTO_RETRY);
 
 	return ret;
@@ -399,7 +399,7 @@ static int tcpm_init(struct tcpc_dev *dev)
 	ret = fusb302_sw_reset(chip);
 	if (ret < 0)
 		return ret;
-	ret = fusb302_enable_tx_auto_retries(chip, FUSB_REG_CONTROL3_N_RETRIES_3);
+	ret = fusb302_enable_tx_auto_retries(chip);
 	if (ret < 0)
 		return ret;
 	ret = fusb302_init_interrupt(chip);
@@ -1019,7 +1019,7 @@ static const char * const transmit_type_name[] = {
 };
 
 static int tcpm_pd_transmit(struct tcpc_dev *dev, enum tcpm_transmit_type type,
-			    const struct pd_message *msg, unsigned int negotiated_rev)
+			    const struct pd_message *msg)
 {
 	struct fusb302_chip *chip = container_of(dev, struct fusb302_chip,
 						 tcpc_dev);
@@ -1028,13 +1028,6 @@ static int tcpm_pd_transmit(struct tcpc_dev *dev, enum tcpm_transmit_type type,
 	mutex_lock(&chip->lock);
 	switch (type) {
 	case TCPC_TX_SOP:
-		/* nRetryCount 3 in P2.0 spec, whereas 2 in PD3.0 spec */
-		ret = fusb302_enable_tx_auto_retries(chip, negotiated_rev > PD_REV20 ?
-						     FUSB_REG_CONTROL3_N_RETRIES_2 :
-						     FUSB_REG_CONTROL3_N_RETRIES_3);
-		if (ret < 0)
-			fusb302_log(chip, "Cannot update retry count ret=%d", ret);
-
 		ret = fusb302_pd_send_message(chip, msg);
 		if (ret < 0)
 			fusb302_log(chip,
@@ -1677,7 +1670,8 @@ static struct fwnode_handle *fusb302_fwnode_get(struct device *dev)
 	return fwnode;
 }
 
-static int fusb302_probe(struct i2c_client *client)
+static int fusb302_probe(struct i2c_client *client,
+			 const struct i2c_device_id *id)
 {
 	struct fusb302_chip *chip;
 	struct i2c_adapter *adapter = client->adapter;
@@ -1707,8 +1701,8 @@ static int fusb302_probe(struct i2c_client *client)
 	 */
 	if (device_property_read_string(dev, "linux,extcon-name", &name) == 0) {
 		chip->extcon = extcon_get_extcon_dev(name);
-		if (IS_ERR(chip->extcon))
-			return PTR_ERR(chip->extcon);
+		if (!chip->extcon)
+			return -EPROBE_DEFER;
 	}
 
 	chip->vbus = devm_regulator_get(chip->dev, "vbus");
@@ -1742,8 +1736,9 @@ static int fusb302_probe(struct i2c_client *client)
 	chip->tcpm_port = tcpm_register_port(&client->dev, &chip->tcpc_dev);
 	if (IS_ERR(chip->tcpm_port)) {
 		fwnode_handle_put(chip->tcpc_dev.fwnode);
-		ret = dev_err_probe(dev, PTR_ERR(chip->tcpm_port),
-				    "cannot register tcpm port\n");
+		ret = PTR_ERR(chip->tcpm_port);
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev, "cannot register tcpm port, ret=%d", ret);
 		goto destroy_workqueue;
 	}
 
@@ -1769,7 +1764,7 @@ destroy_workqueue:
 	return ret;
 }
 
-static void fusb302_remove(struct i2c_client *client)
+static int fusb302_remove(struct i2c_client *client)
 {
 	struct fusb302_chip *chip = i2c_get_clientdata(client);
 
@@ -1781,6 +1776,8 @@ static void fusb302_remove(struct i2c_client *client)
 	fwnode_handle_put(chip->tcpc_dev.fwnode);
 	destroy_workqueue(chip->wq);
 	fusb302_debugfs_exit(chip);
+
+	return 0;
 }
 
 static int fusb302_pm_suspend(struct device *dev)
@@ -1813,7 +1810,7 @@ static int fusb302_pm_resume(struct device *dev)
 	return 0;
 }
 
-static const struct of_device_id fusb302_dt_match[] __maybe_unused = {
+static const struct of_device_id fusb302_dt_match[] = {
 	{.compatible = "fcs,fusb302"},
 	{},
 };

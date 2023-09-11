@@ -21,7 +21,6 @@
 #include <crypto/algapi.h>
 #include <crypto/ghash.h>
 #include <crypto/internal/aead.h>
-#include <crypto/internal/cipher.h>
 #include <crypto/internal/skcipher.h>
 #include <crypto/scatterwalk.h>
 #include <linux/err.h>
@@ -397,6 +396,10 @@ static int xts_aes_set_key(struct crypto_skcipher *tfm, const u8 *in_key,
 	err = xts_fallback_setkey(tfm, in_key, key_len);
 	if (err)
 		return err;
+
+	/* In fips mode only 128 bit or 256 bit keys are valid */
+	if (fips_enabled && key_len != 32 && key_len != 64)
+		return -EINVAL;
 
 	/* Pick the correct function code based on the key length */
 	fc = (key_len == 32) ? CPACF_KM_XTS_128 :
@@ -1045,11 +1048,10 @@ out_err:
 	return ret;
 }
 
-module_cpu_feature_match(S390_CPU_FEATURE_MSA, aes_s390_init);
+module_cpu_feature_match(MSA, aes_s390_init);
 module_exit(aes_s390_fini);
 
 MODULE_ALIAS_CRYPTO("aes-all");
 
 MODULE_DESCRIPTION("Rijndael (AES) Cipher Algorithm");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(CRYPTO_INTERNAL);

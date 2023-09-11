@@ -48,6 +48,7 @@ SECTIONS {
 		IRQENTRY_TEXT
 		SOFTIRQENTRY_TEXT
 		SCHED_TEXT
+		CPUIDLE_TEXT
 		LOCK_TEXT
 		*(.fixup)
 		. = ALIGN(16);
@@ -64,6 +65,7 @@ SECTIONS {
 	_edata = .;
 
 	EXCEPTION_TABLE(16)
+	NOTES
 
 	. = ALIGN(PAGE_SIZE);
 	__init_begin = .;
@@ -80,12 +82,12 @@ SECTIONS {
 		__init_end = .;
 	}
 
-	BSS_SECTION(4, 0, 4)
+	BSS_SECTION(0, 0, 0)
 
 	_end = .;
 
 	STABS_DEBUG
-	ELF_DETAILS
+	.comment 0 : { *(.comment) }
 
 	/* Sections to be discarded */
 	DISCARDS

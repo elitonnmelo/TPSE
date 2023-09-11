@@ -15,7 +15,6 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c-mux.h>
 #include <linux/i2c.h>
-#include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
@@ -171,7 +170,11 @@ struct sii902x {
 	struct drm_connector connector;
 	struct gpio_desc *reset_gpio;
 	struct i2c_mux_core *i2cmux;
+	struct regulator_bulk_data supplies[2];
 	bool sink_is_hdmi;
+	unsigned int ctx_tpi;
+	unsigned int ctx_interrupt;
+
 	/*
 	 * Mutex protects audio and video functions from interfering
 	 * each other, by keeping their i2c command sequences atomic.
@@ -239,12 +242,12 @@ static void sii902x_reset(struct sii902x *sii902x)
 	if (!sii902x->reset_gpio)
 		return;
 
-	gpiod_set_value_cansleep(sii902x->reset_gpio, 1);
+	gpiod_set_value(sii902x->reset_gpio, 1);
 
 	/* The datasheet says treset-min = 100us. Make it 150us to be sure. */
 	usleep_range(150, 200);
 
-	gpiod_set_value_cansleep(sii902x->reset_gpio, 0);
+	gpiod_set_value(sii902x->reset_gpio, 0);
 }
 
 static enum drm_connector_status sii902x_detect(struct sii902x *sii902x)
@@ -549,9 +552,8 @@ static int sii902x_audio_hw_params(struct device *dev, void *data,
 	unsigned long mclk_rate;
 	int i, ret;
 
-	if (daifmt->bit_clk_provider || daifmt->frame_clk_provider) {
-		dev_dbg(dev, "%s: I2S clock provider mode not supported\n",
-			__func__);
+	if (daifmt->bit_clk_master || daifmt->frame_clk_master) {
+		dev_dbg(dev, "%s: I2S master mode not supported\n", __func__);
 		return -EINVAL;
 	}
 
@@ -998,6 +1000,76 @@ static const struct drm_bridge_timings default_sii902x_timings = {
 		 | DRM_BUS_FLAG_DE_HIGH,
 };
 
+static int __maybe_unused sii902x_resume(struct device *dev)
+{
+	struct sii902x *sii902x = dev_get_drvdata(dev);
+	unsigned int tpi_reg, status;
+	int ret;
+
+	ret = regulator_bulk_enable(ARRAY_SIZE(sii902x->supplies),
+				    sii902x->supplies);
+	if (ret < 0) {
+		dev_err(dev, "Failed to enable supplies");
+		return ret;
+	}
+
+	ret = regmap_read(sii902x->regmap, SII902X_REG_TPI_RQB, &tpi_reg);
+	if (ret)
+		goto err_disable_supply;
+
+	if (tpi_reg != sii902x->ctx_tpi) {
+		/*
+		 * TPI register context has changed. SII902X power supply
+		 * device has been turned off and on.
+		 */
+
+		sii902x_reset(sii902x);
+
+		/* Configure the device to enter TPI mode. */
+		ret = regmap_write(sii902x->regmap, SII902X_REG_TPI_RQB, 0x0);
+		if (ret)
+			goto err_disable_supply;
+
+		/* Re enable the interrupts */
+		regmap_write(sii902x->regmap, SII902X_INT_ENABLE,
+			     sii902x->ctx_interrupt);
+	}
+
+	/* Clear all pending interrupts */
+	regmap_read(sii902x->regmap, SII902X_INT_STATUS, &status);
+	regmap_write(sii902x->regmap, SII902X_INT_STATUS, status);
+
+	return 0;
+
+err_disable_supply:
+
+	regulator_bulk_disable(ARRAY_SIZE(sii902x->supplies),
+			       sii902x->supplies);
+
+	return ret;
+}
+
+static int __maybe_unused sii902x_suspend(struct device *dev)
+{
+	struct sii902x *sii902x = dev_get_drvdata(dev);
+	int ret;
+
+	regmap_read(sii902x->regmap, SII902X_REG_TPI_RQB,
+		    &sii902x->ctx_tpi);
+
+	regmap_read(sii902x->regmap, SII902X_INT_ENABLE,
+		    &sii902x->ctx_interrupt);
+
+	ret = regulator_bulk_disable(ARRAY_SIZE(sii902x->supplies),
+				     sii902x->supplies);
+
+	return ret;
+}
+
+static const struct dev_pm_ops sii902x_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(sii902x_suspend, sii902x_resume)
+};
+
 static int sii902x_init(struct sii902x *sii902x)
 {
 	struct device *dev = &sii902x->i2c->dev;
@@ -1065,12 +1137,12 @@ static int sii902x_init(struct sii902x *sii902x)
 	return i2c_mux_add_adapter(sii902x->i2cmux, 0, 0, 0);
 }
 
-static int sii902x_probe(struct i2c_client *client)
+static int sii902x_probe(struct i2c_client *client,
+			 const struct i2c_device_id *id)
 {
 	struct device *dev = &client->dev;
 	struct device_node *endpoint;
 	struct sii902x *sii902x;
-	static const char * const supplies[] = {"iovcc", "cvcc12"};
 	int ret;
 
 	ret = i2c_check_functionality(client->adapter,
@@ -1116,26 +1188,45 @@ static int sii902x_probe(struct i2c_client *client)
 		sii902x->next_bridge = of_drm_find_bridge(remote);
 		of_node_put(remote);
 		if (!sii902x->next_bridge)
-			return dev_err_probe(dev, -EPROBE_DEFER,
-					     "Failed to find remote bridge\n");
+			return -EPROBE_DEFER;
 	}
 
 	mutex_init(&sii902x->mutex);
 
-	ret = devm_regulator_bulk_get_enable(dev, ARRAY_SIZE(supplies), supplies);
+	sii902x->supplies[0].supply = "iovcc";
+	sii902x->supplies[1].supply = "cvcc12";
+	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(sii902x->supplies),
+				      sii902x->supplies);
 	if (ret < 0)
-		return dev_err_probe(dev, ret, "Failed to enable supplies");
+		return ret;
 
-	return sii902x_init(sii902x);
+	ret = regulator_bulk_enable(ARRAY_SIZE(sii902x->supplies),
+				    sii902x->supplies);
+	if (ret < 0) {
+		dev_err_probe(dev, ret, "Failed to enable supplies");
+		return ret;
+	}
+
+	ret = sii902x_init(sii902x);
+	if (ret < 0) {
+		regulator_bulk_disable(ARRAY_SIZE(sii902x->supplies),
+				       sii902x->supplies);
+	}
+
+	return ret;
 }
 
-static void sii902x_remove(struct i2c_client *client)
+static int sii902x_remove(struct i2c_client *client)
 
 {
 	struct sii902x *sii902x = i2c_get_clientdata(client);
 
 	i2c_mux_del_adapters(sii902x->i2cmux);
 	drm_bridge_remove(&sii902x->bridge);
+	regulator_bulk_disable(ARRAY_SIZE(sii902x->supplies),
+			       sii902x->supplies);
+
+	return 0;
 }
 
 static const struct of_device_id sii902x_dt_ids[] = {
@@ -1155,6 +1246,7 @@ static struct i2c_driver sii902x_driver = {
 	.remove = sii902x_remove,
 	.driver = {
 		.name = "sii902x",
+		.pm = &sii902x_pm_ops,
 		.of_match_table = sii902x_dt_ids,
 	},
 	.id_table = sii902x_i2c_ids,

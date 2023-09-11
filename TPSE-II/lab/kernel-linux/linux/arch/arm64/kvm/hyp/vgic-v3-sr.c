@@ -4,8 +4,6 @@
  * Author: Marc Zyngier <marc.zyngier@arm.com>
  */
 
-#include <hyp/adjust_pc.h>
-
 #include <linux/compiler.h>
 #include <linux/irqchip/arm-gic-v3.h>
 #include <linux/kvm_host.h>
@@ -405,54 +403,9 @@ void __vgic_v3_init_lrs(void)
 		__gic_v3_set_lr(0, i);
 }
 
-/*
- * Return the GIC CPU configuration:
- * - [31:0]  ICH_VTR_EL2
- * - [62:32] RES0
- * - [63]    MMIO (GICv2) capable
- */
-u64 __vgic_v3_get_gic_config(void)
+u64 __vgic_v3_get_ich_vtr_el2(void)
 {
-	u64 val, sre = read_gicreg(ICC_SRE_EL1);
-	unsigned long flags = 0;
-
-	/*
-	 * To check whether we have a MMIO-based (GICv2 compatible)
-	 * CPU interface, we need to disable the system register
-	 * view. To do that safely, we have to prevent any interrupt
-	 * from firing (which would be deadly).
-	 *
-	 * Note that this only makes sense on VHE, as interrupts are
-	 * already masked for nVHE as part of the exception entry to
-	 * EL2.
-	 */
-	if (has_vhe())
-		flags = local_daif_save();
-
-	/*
-	 * Table 11-2 "Permitted ICC_SRE_ELx.SRE settings" indicates
-	 * that to be able to set ICC_SRE_EL1.SRE to 0, all the
-	 * interrupt overrides must be set. You've got to love this.
-	 */
-	sysreg_clear_set(hcr_el2, 0, HCR_AMO | HCR_FMO | HCR_IMO);
-	isb();
-	write_gicreg(0, ICC_SRE_EL1);
-	isb();
-
-	val = read_gicreg(ICC_SRE_EL1);
-
-	write_gicreg(sre, ICC_SRE_EL1);
-	isb();
-	sysreg_clear_set(hcr_el2, HCR_AMO | HCR_FMO | HCR_IMO, 0);
-	isb();
-
-	if (has_vhe())
-		local_daif_restore(flags);
-
-	val  = (val & ICC_SRE_EL1_SRE) ? 0 : (1ULL << 63);
-	val |= read_gicreg(ICH_VTR_EL2);
-
-	return val;
+	return read_gicreg(ICH_VTR_EL2);
 }
 
 u64 __vgic_v3_read_vmcr(void)
@@ -473,7 +426,7 @@ static int __vgic_v3_bpr_min(void)
 
 static int __vgic_v3_get_group(struct kvm_vcpu *vcpu)
 {
-	u64 esr = kvm_vcpu_get_esr(vcpu);
+	u32 esr = kvm_vcpu_get_esr(vcpu);
 	u8 crm = (esr & ESR_ELx_SYS64_ISS_CRM_MASK) >> ESR_ELx_SYS64_ISS_CRM_SHIFT;
 
 	return crm != 8;
@@ -695,7 +648,9 @@ static void __vgic_v3_read_iar(struct kvm_vcpu *vcpu, u32 vmcr, int rt)
 		goto spurious;
 
 	lr_val &= ~ICH_LR_STATE;
-	lr_val |= ICH_LR_ACTIVE_BIT;
+	/* No active state for LPIs */
+	if ((lr_val & ICH_LR_VIRTUAL_ID_MASK) <= VGIC_MAX_SPI)
+		lr_val |= ICH_LR_ACTIVE_BIT;
 	__gic_v3_set_lr(lr_val, lr);
 	__vgic_v3_set_active_priority(lr_prio, vmcr, grp);
 	vcpu_set_reg(vcpu, rt, lr_val & ICH_LR_VIRTUAL_ID_MASK);
@@ -762,17 +717,19 @@ static void __vgic_v3_write_eoir(struct kvm_vcpu *vcpu, u32 vmcr, int rt)
 	/* Drop priority in any case */
 	act_prio = __vgic_v3_clear_highest_active_priority();
 
+	/* If EOIing an LPI, no deactivate to be performed */
+	if (vid >= VGIC_MIN_LPI)
+		return;
+
+	/* EOImode == 1, nothing to be done here */
+	if (vmcr & ICH_VMCR_EOIM_MASK)
+		return;
+
 	lr = __vgic_v3_find_active_lr(vcpu, vid, &lr_val);
 	if (lr == -1) {
-		/* Do not bump EOIcount for LPIs that aren't in the LRs */
-		if (!(vid >= VGIC_MIN_LPI))
-			__vgic_v3_bump_eoicount();
+		__vgic_v3_bump_eoicount();
 		return;
 	}
-
-	/* EOImode == 1 and not an LPI, nothing to be done here */
-	if ((vmcr & ICH_VMCR_EOIM_MASK) && !(vid >= VGIC_MIN_LPI))
-		return;
 
 	lr_prio = (lr_val & ICH_LR_PRIORITY_MASK) >> ICH_LR_PRIORITY_SHIFT;
 
@@ -984,8 +941,7 @@ static void __vgic_v3_read_ctlr(struct kvm_vcpu *vcpu, u32 vmcr, int rt)
 	/* IDbits */
 	val |= ((vtr >> 23) & 7) << ICC_CTLR_EL1_ID_BITS_SHIFT;
 	/* SEIS */
-	if (kvm_vgic_global_state.ich_vtr_el2 & ICH_VTR_SEIS_MASK)
-		val |= BIT(ICC_CTLR_EL1_SEIS_SHIFT);
+	val |= ((vtr >> 22) & 1) << ICC_CTLR_EL1_SEIS_SHIFT;
 	/* A3V */
 	val |= ((vtr >> 21) & 1) << ICC_CTLR_EL1_A3V_SHIFT;
 	/* EOImode */
@@ -1016,7 +972,7 @@ static void __vgic_v3_write_ctlr(struct kvm_vcpu *vcpu, u32 vmcr, int rt)
 int __vgic_v3_perform_cpuif_access(struct kvm_vcpu *vcpu)
 {
 	int rt;
-	u64 esr;
+	u32 esr;
 	u32 vmcr;
 	void (*fn)(struct kvm_vcpu *, u32, int);
 	bool is_read;

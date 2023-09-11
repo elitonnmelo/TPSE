@@ -267,7 +267,7 @@ struct freq_attr cpufreq_freq_attr_##_name##_freqs =     \
 __ATTR_RO(_name##_frequencies)
 
 /*
- * scaling_available_frequencies_show - show available normal frequencies for
+ * show_scaling_available_frequencies - show available normal frequencies for
  * the specified CPU
  */
 static ssize_t scaling_available_frequencies_show(struct cpufreq_policy *policy,
@@ -279,7 +279,7 @@ cpufreq_attr_available_freq(scaling_available);
 EXPORT_SYMBOL_GPL(cpufreq_freq_attr_scaling_available_freqs);
 
 /*
- * scaling_boost_frequencies_show - show available boost frequencies for
+ * show_available_boost_freqs - show available boost frequencies for
  * the specified CPU
  */
 static ssize_t scaling_boost_frequencies_show(struct cpufreq_policy *policy,
@@ -355,13 +355,8 @@ int cpufreq_table_validate_and_sort(struct cpufreq_policy *policy)
 {
 	int ret;
 
-	if (!policy->freq_table) {
-		/* Freq table must be passed by drivers with target_index() */
-		if (has_target_index())
-			return -EINVAL;
-
+	if (!policy->freq_table)
 		return 0;
-	}
 
 	ret = cpufreq_frequency_table_cpuinfo(policy, policy->freq_table);
 	if (ret)
@@ -372,3 +367,4 @@ int cpufreq_table_validate_and_sort(struct cpufreq_policy *policy)
 
 MODULE_AUTHOR("Dominik Brodowski <linux@brodo.de>");
 MODULE_DESCRIPTION("CPUfreq frequency table helpers");
+MODULE_LICENSE("GPL");

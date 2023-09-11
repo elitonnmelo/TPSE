@@ -12,9 +12,10 @@
 #ifndef _K3_SA2UL_
 #define _K3_SA2UL_
 
+#include <linux/interrupt.h>
+#include <linux/skbuff.h>
+#include <linux/hw_random.h>
 #include <crypto/aes.h>
-#include <crypto/sha1.h>
-#include <crypto/sha2.h>
 
 #define SA_ENGINE_STATUS		0x0008
 #define SA_ENGINE_ENABLE_CONTROL	0x1000
@@ -190,6 +191,7 @@ struct sa_match_data;
  * @dma_rx1: Pointer to DMA rx channel for sizes < 256 Bytes
  * @dma_rx2: Pointer to DMA rx channel for sizes > 256 Bytes
  * @dma_tx: Pointer to DMA TX channel
+ * @fallback_sz: SW fallback limit for crypto algorithms
  */
 struct sa_crypto_data {
 	void __iomem *base;
@@ -208,6 +210,7 @@ struct sa_crypto_data {
 	struct dma_chan		*dma_rx1;
 	struct dma_chan		*dma_rx2;
 	struct dma_chan		*dma_tx;
+	int			fallback_sz;
 };
 
 /**
@@ -315,7 +318,7 @@ struct sa_tfm_ctx {
 	struct crypto_shash	*shash;
 	/* for fallback */
 	union {
-		struct crypto_skcipher		*skcipher;
+		struct crypto_sync_skcipher	*skcipher;
 		struct crypto_ahash		*ahash;
 		struct crypto_aead		*aead;
 	} fallback;

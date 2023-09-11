@@ -6,7 +6,7 @@
 $id: http://devicetree.org/schemas/dma/ti/k3-bcdma.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Texas Instruments K3 DMSS BCDMA
+title: Texas Instruments K3 DMSS BCDMA Device Tree Bindings
 
 maintainers:
   - Peter Ujfalusi <peter.ujfalusi@gmail.com>
@@ -33,7 +33,6 @@ properties:
     enum:
       - ti,am62a-dmss-bcdma-csirx
       - ti,am64-dmss-bcdma
-      - ti,j721s2-dmss-bcdma-csi
 
   reg:
     minItems: 3
@@ -128,7 +127,6 @@ required:
 
 allOf:
   - $ref: /schemas/dma/dma-controller.yaml#
-  - $ref: /schemas/arm/keystone/ti,k3-sci-common.yaml#
 
   - if:
       properties:
@@ -152,12 +150,7 @@ allOf:
       required:
         - power-domains
 
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: ti,am64-dmss-bcdma
-    then:
+    else:
       properties:
         reg:
           minItems: 5
@@ -172,28 +165,6 @@ allOf:
 
       required:
         - ti,sci-rm-range-bchan
-        - ti,sci-rm-range-tchan
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: ti,j721s2-dmss-bcdma-csi
-    then:
-      properties:
-        ti,sci-rm-range-bchan: false
-
-        reg:
-          maxItems: 4
-
-        reg-names:
-          items:
-            - const: gcfg
-            - const: rchanrt
-            - const: tchanrt
-            - const: ringrt
-
-      required:
         - ti,sci-rm-range-tchan
 
 unevaluatedProperties: false

@@ -61,7 +61,7 @@ struct am65_cpsw_regdump_item {
 
 #define AM65_CPSW_REGDUMP_REC(mod, start, end) { \
 	.hdr.module_id = (mod), \
-	.hdr.len = (end + 4 - start) * 2 + \
+	.hdr.len = (((u32 *)(end)) - ((u32 *)(start)) + 1) * sizeof(u32) * 2 + \
 		   sizeof(struct am65_cpsw_regdump_hdr), \
 	.start_ofs = (start), \
 	.end_ofs = end, \
@@ -372,7 +372,15 @@ static const struct am65_cpsw_ethtool_stat am65_slave_stats[] = {
 /* Ethtool priv_flags */
 static const char am65_cpsw_ethtool_priv_flags[][ETH_GSTRING_LEN] = {
 #define	AM65_CPSW_PRIV_P0_RX_PTYPE_RROBIN	BIT(0)
+/* common flags */
 	"p0-rx-ptype-rrobin",
+/* port specific flags */
+#define AM65_CPSW_PRIV_IET_FRAME_PREEMPTION	BIT(1)
+	"iet-frame-preemption",
+#define AM65_CPSW_PRIV_IET_MAC_VERIFY		BIT(2)
+	"iet-mac-verify",
+#define AM65_CPSW_PRIV_CUT_THRU			BIT(3)
+	"cut-thru",
 };
 
 static int am65_cpsw_ethtool_op_begin(struct net_device *ndev)
@@ -380,9 +388,11 @@ static int am65_cpsw_ethtool_op_begin(struct net_device *ndev)
 	struct am65_cpsw_common *common = am65_ndev_to_common(ndev);
 	int ret;
 
-	ret = pm_runtime_resume_and_get(common->dev);
-	if (ret < 0)
+	ret = pm_runtime_get_sync(common->dev);
+	if (ret < 0) {
 		dev_err(common->dev, "ethtool begin failed %d\n", ret);
+		pm_runtime_put_noidle(common->dev);
+	}
 
 	return ret;
 }
@@ -402,9 +412,9 @@ static void am65_cpsw_get_drvinfo(struct net_device *ndev,
 {
 	struct am65_cpsw_common *common = am65_ndev_to_common(ndev);
 
-	strscpy(info->driver, dev_driver_string(common->dev),
+	strlcpy(info->driver, dev_driver_string(common->dev),
 		sizeof(info->driver));
-	strscpy(info->bus_info, dev_name(common->dev), sizeof(info->bus_info));
+	strlcpy(info->bus_info, dev_name(common->dev), sizeof(info->bus_info));
 }
 
 static u32 am65_cpsw_get_msglevel(struct net_device *ndev)
@@ -451,11 +461,8 @@ static int am65_cpsw_set_channels(struct net_device *ndev,
 	return am65_cpsw_nuss_update_tx_chns(common, chs->tx_count);
 }
 
-static void
-am65_cpsw_get_ringparam(struct net_device *ndev,
-			struct ethtool_ringparam *ering,
-			struct kernel_ethtool_ringparam *kernel_ering,
-			struct netlink_ext_ack *extack)
+static void am65_cpsw_get_ringparam(struct net_device *ndev,
+				    struct ethtool_ringparam *ering)
 {
 	struct am65_cpsw_common *common = am65_ndev_to_common(ndev);
 
@@ -686,10 +693,19 @@ static int am65_cpsw_get_ethtool_ts_info(struct net_device *ndev,
 static u32 am65_cpsw_get_ethtool_priv_flags(struct net_device *ndev)
 {
 	struct am65_cpsw_common *common = am65_ndev_to_common(ndev);
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	struct am65_cpsw_iet *iet = &port->qos.iet;
 	u32 priv_flags = 0;
 
 	if (common->pf_p0_rx_ptype_rrobin)
 		priv_flags |= AM65_CPSW_PRIV_P0_RX_PTYPE_RROBIN;
+	/* Port specific flags */
+	if (iet->fpe_configured)
+		priv_flags |= AM65_CPSW_PRIV_IET_FRAME_PREEMPTION;
+	if (iet->mac_verify_configured)
+		priv_flags |= AM65_CPSW_PRIV_IET_MAC_VERIFY;
+	if (port->qos.cut_thru.enable)
+		priv_flags |= AM65_CPSW_PRIV_CUT_THRU;
 
 	return priv_flags;
 }
@@ -697,20 +713,115 @@ static u32 am65_cpsw_get_ethtool_priv_flags(struct net_device *ndev)
 static int am65_cpsw_set_ethtool_priv_flags(struct net_device *ndev, u32 flags)
 {
 	struct am65_cpsw_common *common = am65_ndev_to_common(ndev);
-	int rrobin;
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	struct am65_cpsw_iet *iet = &port->qos.iet;
+	int rrobin, iet_fpe, mac_verify, cut_thru;
 
 	rrobin = !!(flags & AM65_CPSW_PRIV_P0_RX_PTYPE_RROBIN);
+	iet_fpe = !!(flags & AM65_CPSW_PRIV_IET_FRAME_PREEMPTION);
+	mac_verify = !!(flags & AM65_CPSW_PRIV_IET_MAC_VERIFY);
+	cut_thru =  !!(flags & AM65_CPSW_PRIV_CUT_THRU);
 
 	if (common->usage_count)
 		return -EBUSY;
 
-	if (common->est_enabled && rrobin) {
+	if ((common->est_enabled || common->iet_enabled || iet_fpe) && rrobin) {
 		netdev_err(ndev,
 			   "p0-rx-ptype-rrobin flag conflicts with QOS\n");
 		return -EINVAL;
 	}
 
+	if (common->tx_ch_num < 2 && iet_fpe) {
+		netdev_err(ndev, "IET fpe needs at least 2 h/w queues\n");
+		return -EINVAL;
+	}
+
+	if (mac_verify && (!iet->fpe_configured && !iet_fpe)) {
+		netdev_err(ndev, "Enable IET FPE for IET MAC verify\n");
+		return -EINVAL;
+	}
+
+	if (cut_thru && !(common->pdata.quirks & AM64_CPSW_QUIRK_CUT_THRU)) {
+		netdev_err(ndev, "Cut-Thru not supported\n");
+		return -EOPNOTSUPP;
+	}
+
+	if (cut_thru && common->is_emac_mode) {
+		netdev_err(ndev, "Enable switch mode for cut-thru\n");
+		return -EINVAL;
+	}
+
 	common->pf_p0_rx_ptype_rrobin = rrobin;
+	iet->fpe_configured = iet_fpe;
+	iet->mac_verify_configured = mac_verify;
+	port->qos.cut_thru.enable = cut_thru;
+
+	return 0;
+}
+
+static int am65_cpsw_get_coalesce(struct net_device *ndev, struct ethtool_coalesce *coal)
+{
+	struct am65_cpsw_common *common = am65_ndev_to_common(ndev);
+	struct am65_cpsw_tx_chn *tx_chn;
+
+	tx_chn = &common->tx_chns[0];
+
+	coal->rx_coalesce_usecs = common->rx_pace_timeout / 1000;
+	coal->tx_coalesce_usecs = tx_chn->tx_pace_timeout / 1000;
+
+	return 0;
+}
+
+static int am65_cpsw_get_per_queue_coalesce(struct net_device *ndev, u32 queue,
+					    struct ethtool_coalesce *coal)
+{
+	struct am65_cpsw_common *common = am65_ndev_to_common(ndev);
+	struct am65_cpsw_tx_chn *tx_chn;
+
+	if (queue >= AM65_CPSW_MAX_TX_QUEUES)
+		return -EINVAL;
+
+	tx_chn = &common->tx_chns[queue];
+
+	coal->tx_coalesce_usecs = tx_chn->tx_pace_timeout / 1000;
+
+	return 0;
+}
+
+static int am65_cpsw_set_coalesce(struct net_device *ndev, struct ethtool_coalesce *coal)
+{
+	struct am65_cpsw_common *common = am65_ndev_to_common(ndev);
+	struct am65_cpsw_tx_chn *tx_chn;
+
+	tx_chn = &common->tx_chns[0];
+
+	if (coal->rx_coalesce_usecs && coal->rx_coalesce_usecs < 20)
+		coal->rx_coalesce_usecs = 20;
+
+	if (coal->tx_coalesce_usecs && coal->tx_coalesce_usecs < 20)
+		coal->tx_coalesce_usecs = 20;
+
+	common->rx_pace_timeout = coal->rx_coalesce_usecs * 1000;
+	tx_chn->tx_pace_timeout = coal->tx_coalesce_usecs * 1000;
+
+	return 0;
+}
+
+static int am65_cpsw_set_per_queue_coalesce(struct net_device *ndev, u32 queue,
+					    struct ethtool_coalesce *coal)
+{
+	struct am65_cpsw_common *common = am65_ndev_to_common(ndev);
+	struct am65_cpsw_tx_chn *tx_chn;
+
+	if (queue >= AM65_CPSW_MAX_TX_QUEUES)
+		return -EINVAL;
+
+	tx_chn = &common->tx_chns[queue];
+
+	if (coal->tx_coalesce_usecs && coal->tx_coalesce_usecs < 20)
+		coal->tx_coalesce_usecs = 20;
+
+	tx_chn->tx_pace_timeout = coal->tx_coalesce_usecs * 1000;
 
 	return 0;
 }
@@ -732,6 +843,11 @@ const struct ethtool_ops am65_cpsw_ethtool_ops_slave = {
 	.get_ts_info		= am65_cpsw_get_ethtool_ts_info,
 	.get_priv_flags		= am65_cpsw_get_ethtool_priv_flags,
 	.set_priv_flags		= am65_cpsw_set_ethtool_priv_flags,
+	.supported_coalesce_params = ETHTOOL_COALESCE_RX_USECS | ETHTOOL_COALESCE_TX_USECS,
+	.get_coalesce           = am65_cpsw_get_coalesce,
+	.set_coalesce           = am65_cpsw_set_coalesce,
+	.get_per_queue_coalesce = am65_cpsw_get_per_queue_coalesce,
+	.set_per_queue_coalesce = am65_cpsw_set_per_queue_coalesce,
 
 	.get_link		= ethtool_op_get_link,
 	.get_link_ksettings	= am65_cpsw_get_link_ksettings,

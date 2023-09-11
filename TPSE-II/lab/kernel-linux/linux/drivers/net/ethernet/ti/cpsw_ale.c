@@ -72,7 +72,7 @@ enum {
 };
 
 /**
- * struct cpsw_ale_dev_id - The ALE version/SoC specific configuration
+ * struct ale_dev_id - The ALE version/SoC specific configuration
  * @dev_id: ALE version/SoC id
  * @features: features supported by ALE
  * @tbl_entries: number of ALE entries
@@ -1365,8 +1365,10 @@ struct cpsw_ale *cpsw_ale_create(struct cpsw_ale_params *params)
 	if (!ale)
 		return ERR_PTR(-ENOMEM);
 
-	ale->p0_untag_vid_mask = devm_bitmap_zalloc(params->dev, VLAN_N_VID,
-						    GFP_KERNEL);
+	ale->p0_untag_vid_mask =
+		devm_kmalloc_array(params->dev, BITS_TO_LONGS(VLAN_N_VID),
+				   sizeof(unsigned long),
+				   GFP_KERNEL);
 	if (!ale->p0_untag_vid_mask)
 		return ERR_PTR(-ENOMEM);
 
@@ -1454,10 +1456,12 @@ void cpsw_ale_dump(struct cpsw_ale *ale, u32 *data)
 
 void cpsw_ale_restore(struct cpsw_ale *ale, u32 *data)
 {
-	int i;
+	int i, type;
 
 	for (i = 0; i < ale->params.ale_entries; i++) {
-		cpsw_ale_write(ale, i, data);
+		type = cpsw_ale_get_entry_type(data);
+		if (type != ALE_TYPE_FREE)
+			cpsw_ale_write(ale, i, data);
 		data += ALE_ENTRY_WORDS;
 	}
 }

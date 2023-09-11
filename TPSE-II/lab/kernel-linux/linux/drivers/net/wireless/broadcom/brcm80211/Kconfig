@@ -7,20 +7,16 @@ config BRCMSMAC
 	depends on MAC80211
 	depends on BCMA_POSSIBLE
 	select BCMA
+	select NEW_LEDS if BCMA_DRIVER_GPIO
+	select LEDS_CLASS if BCMA_DRIVER_GPIO
 	select BRCMUTIL
 	select FW_LOADER
 	select CORDIC
 	help
 	  This module adds support for PCIe wireless adapters based on Broadcom
-	  IEEE802.11n SoftMAC chipsets. If you choose to build a module, the
-	  driver will be called brcmsmac.ko.
-
-config BRCMSMAC_LEDS
-	def_bool BRCMSMAC && BCMA_DRIVER_GPIO && MAC80211_LEDS
-	help
-	  The brcmsmac LED support depends on the presence of the
-	  BCMA_DRIVER_GPIO driver, and it only works if LED support
-	  is enabled and reachable from the driver module.
+	  IEEE802.11n SoftMAC chipsets. It also has WLAN led support, which will
+	  be available if you select BCMA_DRIVER_GPIO. If you choose to build a
+	  module, the driver will be called brcmsmac.ko.
 
 source "drivers/net/wireless/broadcom/brcm80211/brcmfmac/Kconfig"
 
@@ -38,6 +34,26 @@ config BRCM_TRACING
 config BRCMDBG
 	bool "Broadcom driver debug functions"
 	depends on BRCMSMAC || BRCMFMAC
-	select WANT_DEV_COREDUMP if BRCMFMAC
+	select WANT_DEV_COREDUMP
 	help
 	  Selecting this enables additional code for debug purposes.
+
+config BRCMFMAC_PCIE_BARWIN_SZ
+	bool "Custom PCIE BAR window size support for FullMAC driver"
+	depends on BRCMFMAC
+	depends on PCI
+	default n
+	help
+	  If you say Y here, the FMAC driver will use custom PCIE BAR
+	  window size. Say Y to allow developers to use custom PCIE
+	  BAR window size when HOST PCIE IP can support less then 4MB
+	  BAR window.
+
+config BRCMFMAC_BT_SHARED_SDIO
+	bool "FMAC shares SDIO bus to Bluetooth"
+	depends on BRCMFMAC
+	depends on BRCMFMAC_SDIO
+	default n
+	help
+	  Selecting this to enables sharing the SDIO bus interface between
+	  Cypress BT and WiFi host drivers.

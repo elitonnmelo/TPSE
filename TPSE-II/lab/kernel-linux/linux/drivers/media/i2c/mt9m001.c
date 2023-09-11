@@ -217,9 +217,9 @@ static int mt9m001_s_stream(struct v4l2_subdev *sd, int enable)
 		goto done;
 
 	if (enable) {
-		ret = pm_runtime_resume_and_get(&client->dev);
+		ret = pm_runtime_get_sync(&client->dev);
 		if (ret < 0)
-			goto unlock;
+			goto put_unlock;
 
 		ret = mt9m001_apply_selection(sd);
 		if (ret)
@@ -247,7 +247,6 @@ done:
 
 put_unlock:
 	pm_runtime_put(&client->dev);
-unlock:
 	mutex_unlock(&mt9m001->mutex);
 
 	return ret;
@@ -695,12 +694,10 @@ static int mt9m001_get_mbus_config(struct v4l2_subdev *sd,
 				   struct v4l2_mbus_config *cfg)
 {
 	/* MT9M001 has all capture_format parameters fixed */
+	cfg->flags = V4L2_MBUS_PCLK_SAMPLE_FALLING |
+		V4L2_MBUS_HSYNC_ACTIVE_HIGH | V4L2_MBUS_VSYNC_ACTIVE_HIGH |
+		V4L2_MBUS_DATA_ACTIVE_HIGH | V4L2_MBUS_MASTER;
 	cfg->type = V4L2_MBUS_PARALLEL;
-	cfg->bus.parallel.flags = V4L2_MBUS_PCLK_SAMPLE_FALLING |
-				  V4L2_MBUS_HSYNC_ACTIVE_HIGH |
-				  V4L2_MBUS_VSYNC_ACTIVE_HIGH |
-				  V4L2_MBUS_DATA_ACTIVE_HIGH |
-				  V4L2_MBUS_MASTER;
 
 	return 0;
 }
@@ -833,14 +830,10 @@ error_hdl_free:
 	return ret;
 }
 
-static void mt9m001_remove(struct i2c_client *client)
+static int mt9m001_remove(struct i2c_client *client)
 {
 	struct mt9m001 *mt9m001 = to_mt9m001(client);
 
-	/*
-	 * As it increments RPM usage_count even on errors, we don't need to
-	 * check the returned code here.
-	 */
 	pm_runtime_get_sync(&client->dev);
 
 	v4l2_async_unregister_subdev(&mt9m001->subdev);
@@ -853,6 +846,8 @@ static void mt9m001_remove(struct i2c_client *client)
 
 	v4l2_ctrl_handler_free(&mt9m001->hdl);
 	mutex_destroy(&mt9m001->mutex);
+
+	return 0;
 }
 
 static const struct i2c_device_id mt9m001_id[] = {
@@ -877,7 +872,7 @@ static struct i2c_driver mt9m001_i2c_driver = {
 		.pm = &mt9m001_pm_ops,
 		.of_match_table = mt9m001_of_match,
 	},
-	.probe		= mt9m001_probe,
+	.probe_new	= mt9m001_probe,
 	.remove		= mt9m001_remove,
 	.id_table	= mt9m001_id,
 };

@@ -56,17 +56,12 @@ properties:
     enum: [8, 16]
     default: 8
 
-  rb-gpios:
-    description:
-      GPIO connection to R/B signal from NAND chip
-    maxItems: 1
-
 patternProperties:
   "@[0-9a-f]+$":
-    $ref: /schemas/mtd/partitions/partition.yaml
+    $ref: "/schemas/mtd/partitions/partition.yaml"
 
 allOf:
-  - $ref: /schemas/memory-controllers/ti,gpmc-child.yaml
+  - $ref: "/schemas/memory-controllers/ti,gpmc-child.yaml"
 
 required:
   - compatible

@@ -154,7 +154,7 @@ static void adv748x_afe_set_video_standard(struct adv748x_state *state,
 		   (sdpstd & 0xf) << ADV748X_SDP_VID_SEL_SHIFT);
 }
 
-int adv748x_afe_s_input(struct adv748x_afe *afe, unsigned int input)
+static int adv748x_afe_s_input(struct adv748x_afe *afe, unsigned int input)
 {
 	struct adv748x_state *state = adv748x_afe_to_state(afe);
 

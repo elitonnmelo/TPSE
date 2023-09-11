@@ -23,7 +23,6 @@ struct pci_epf_group {
 	struct config_group group;
 	struct config_group primary_epc_group;
 	struct config_group secondary_epc_group;
-	struct config_group *type_group;
 	struct delayed_work cfs_work;
 	struct pci_epf *epf;
 	int index;
@@ -176,11 +175,9 @@ static ssize_t pci_epc_start_store(struct config_item *item, const char *page,
 
 	epc = epc_group->epc;
 
-	if (kstrtobool(page, &start) < 0)
-		return -EINVAL;
-
-	if (start == epc_group->start)
-		return -EALREADY;
+	ret = kstrtobool(page, &start);
+	if (ret)
+		return ret;
 
 	if (!start) {
 		pci_epc_stop(epc);
@@ -201,7 +198,8 @@ static ssize_t pci_epc_start_store(struct config_item *item, const char *page,
 
 static ssize_t pci_epc_start_show(struct config_item *item, char *page)
 {
-	return sysfs_emit(page, "%d\n", to_pci_epc_group(item)->start);
+	return sprintf(page, "%d\n",
+		       to_pci_epc_group(item)->start);
 }
 
 CONFIGFS_ATTR(pci_epc_, start);
@@ -323,7 +321,7 @@ static ssize_t pci_epf_##_name##_show(struct config_item *item,	char *page)    \
 	struct pci_epf *epf = to_pci_epf_group(item)->epf;		       \
 	if (WARN_ON_ONCE(!epf->header))					       \
 		return -EINVAL;						       \
-	return sysfs_emit(page, "0x%04x\n", epf->header->_name);	       \
+	return sprintf(page, "0x%04x\n", epf->header->_name);		       \
 }
 
 #define PCI_EPF_HEADER_W_u32(_name)					       \
@@ -331,11 +329,13 @@ static ssize_t pci_epf_##_name##_store(struct config_item *item,	       \
 				       const char *page, size_t len)	       \
 {									       \
 	u32 val;							       \
+	int ret;							       \
 	struct pci_epf *epf = to_pci_epf_group(item)->epf;		       \
 	if (WARN_ON_ONCE(!epf->header))					       \
 		return -EINVAL;						       \
-	if (kstrtou32(page, 0, &val) < 0)				       \
-		return -EINVAL;						       \
+	ret = kstrtou32(page, 0, &val);					       \
+	if (ret)							       \
+		return ret;						       \
 	epf->header->_name = val;					       \
 	return len;							       \
 }
@@ -345,11 +345,13 @@ static ssize_t pci_epf_##_name##_store(struct config_item *item,	       \
 				       const char *page, size_t len)	       \
 {									       \
 	u16 val;							       \
+	int ret;							       \
 	struct pci_epf *epf = to_pci_epf_group(item)->epf;		       \
 	if (WARN_ON_ONCE(!epf->header))					       \
 		return -EINVAL;						       \
-	if (kstrtou16(page, 0, &val) < 0)				       \
-		return -EINVAL;						       \
+	ret = kstrtou16(page, 0, &val);					       \
+	if (ret)							       \
+		return ret;						       \
 	epf->header->_name = val;					       \
 	return len;							       \
 }
@@ -359,11 +361,13 @@ static ssize_t pci_epf_##_name##_store(struct config_item *item,	       \
 				       const char *page, size_t len)	       \
 {									       \
 	u8 val;								       \
+	int ret;							       \
 	struct pci_epf *epf = to_pci_epf_group(item)->epf;		       \
 	if (WARN_ON_ONCE(!epf->header))					       \
 		return -EINVAL;						       \
-	if (kstrtou8(page, 0, &val) < 0)				       \
-		return -EINVAL;						       \
+	ret = kstrtou8(page, 0, &val);					       \
+	if (ret)							       \
+		return ret;						       \
 	epf->header->_name = val;					       \
 	return len;							       \
 }
@@ -372,9 +376,11 @@ static ssize_t pci_epf_msi_interrupts_store(struct config_item *item,
 					    const char *page, size_t len)
 {
 	u8 val;
+	int ret;
 
-	if (kstrtou8(page, 0, &val) < 0)
-		return -EINVAL;
+	ret = kstrtou8(page, 0, &val);
+	if (ret)
+		return ret;
 
 	to_pci_epf_group(item)->epf->msi_interrupts = val;
 
@@ -384,17 +390,19 @@ static ssize_t pci_epf_msi_interrupts_store(struct config_item *item,
 static ssize_t pci_epf_msi_interrupts_show(struct config_item *item,
 					   char *page)
 {
-	return sysfs_emit(page, "%d\n",
-			  to_pci_epf_group(item)->epf->msi_interrupts);
+	return sprintf(page, "%d\n",
+		       to_pci_epf_group(item)->epf->msi_interrupts);
 }
 
 static ssize_t pci_epf_msix_interrupts_store(struct config_item *item,
 					     const char *page, size_t len)
 {
 	u16 val;
+	int ret;
 
-	if (kstrtou16(page, 0, &val) < 0)
-		return -EINVAL;
+	ret = kstrtou16(page, 0, &val);
+	if (ret)
+		return ret;
 
 	to_pci_epf_group(item)->epf->msix_interrupts = val;
 
@@ -404,8 +412,8 @@ static ssize_t pci_epf_msix_interrupts_store(struct config_item *item,
 static ssize_t pci_epf_msix_interrupts_show(struct config_item *item,
 					    char *page)
 {
-	return sysfs_emit(page, "%d\n",
-			  to_pci_epf_group(item)->epf->msix_interrupts);
+	return sprintf(page, "%d\n",
+		       to_pci_epf_group(item)->epf->msix_interrupts);
 }
 
 PCI_EPF_HEADER_R(vendorid)
@@ -506,64 +514,33 @@ static struct configfs_item_operations pci_epf_ops = {
 	.release		= pci_epf_release,
 };
 
+static struct config_group *pci_epf_type_make(struct config_group *group,
+					      const char *name)
+{
+	struct pci_epf_group *epf_group = to_pci_epf_group(&group->cg_item);
+	struct config_group *epf_type_group;
+
+	epf_type_group = pci_epf_type_add_cfs(epf_group->epf, group);
+	return epf_type_group;
+}
+
+static void pci_epf_type_drop(struct config_group *group,
+			      struct config_item *item)
+{
+	config_item_put(item);
+}
+
+static struct configfs_group_operations pci_epf_type_group_ops = {
+	.make_group     = &pci_epf_type_make,
+	.drop_item      = &pci_epf_type_drop,
+};
+
 static const struct config_item_type pci_epf_type = {
+	.ct_group_ops	= &pci_epf_type_group_ops,
 	.ct_item_ops	= &pci_epf_ops,
 	.ct_attrs	= pci_epf_attrs,
 	.ct_owner	= THIS_MODULE,
 };
-
-/**
- * pci_epf_type_add_cfs() - Help function drivers to expose function specific
- *                          attributes in configfs
- * @epf: the EPF device that has to be configured using configfs
- * @group: the parent configfs group (corresponding to entries in
- *         pci_epf_device_id)
- *
- * Invoke to expose function specific attributes in configfs.
- *
- * Return: A pointer to a config_group structure or NULL if the function driver
- * does not have anything to expose (attributes configured by user) or if
- * the function driver does not implement the add_cfs() method.
- *
- * Returns an error pointer if this function is called for an unbound EPF device
- * or if the EPF driver add_cfs() method fails.
- */
-static struct config_group *pci_epf_type_add_cfs(struct pci_epf *epf,
-						 struct config_group *group)
-{
-	struct config_group *epf_type_group;
-
-	if (!epf->driver) {
-		dev_err(&epf->dev, "epf device not bound to driver\n");
-		return ERR_PTR(-ENODEV);
-	}
-
-	if (!epf->driver->ops->add_cfs)
-		return NULL;
-
-	mutex_lock(&epf->lock);
-	epf_type_group = epf->driver->ops->add_cfs(epf, group);
-	mutex_unlock(&epf->lock);
-
-	return epf_type_group;
-}
-
-static void pci_ep_cfs_add_type_group(struct pci_epf_group *epf_group)
-{
-	struct config_group *group;
-
-	group = pci_epf_type_add_cfs(epf_group->epf, &epf_group->group);
-	if (!group)
-		return;
-
-	if (IS_ERR(group)) {
-		dev_err(&epf_group->epf->dev,
-			"failed to create epf type specific attributes\n");
-		return;
-	}
-
-	configfs_register_group(&epf_group->group, group);
-}
 
 static void pci_epf_cfs_work(struct work_struct *work)
 {
@@ -582,8 +559,6 @@ static void pci_epf_cfs_work(struct work_struct *work)
 		pr_err("failed to create 'secondary' EPC interface\n");
 		return;
 	}
-
-	pci_ep_cfs_add_type_group(epf_group);
 }
 
 static struct config_group *pci_epf_make(struct config_group *group,
@@ -765,3 +740,4 @@ module_exit(pci_ep_cfs_exit);
 
 MODULE_DESCRIPTION("PCI EP CONFIGFS");
 MODULE_AUTHOR("Kishon Vijay Abraham I <kishon@ti.com>");
+MODULE_LICENSE("GPL v2");

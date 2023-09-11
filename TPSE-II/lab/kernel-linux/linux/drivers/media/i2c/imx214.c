@@ -779,9 +779,11 @@ static int imx214_s_stream(struct v4l2_subdev *subdev, int enable)
 		return 0;
 
 	if (enable) {
-		ret = pm_runtime_resume_and_get(imx214->dev);
-		if (ret < 0)
+		ret = pm_runtime_get_sync(imx214->dev);
+		if (ret < 0) {
+			pm_runtime_put_noidle(imx214->dev);
 			return ret;
+		}
 
 		ret = imx214_start_streaming(imx214);
 		if (ret < 0)
@@ -1062,7 +1064,7 @@ static int imx214_probe(struct i2c_client *client)
 
 	imx214_entity_init_cfg(&imx214->sd, NULL);
 
-	ret = v4l2_async_register_subdev_sensor(&imx214->sd);
+	ret = v4l2_async_register_subdev_sensor_common(&imx214->sd);
 	if (ret < 0) {
 		dev_err(dev, "could not register v4l2 device\n");
 		goto free_entity;
@@ -1080,7 +1082,7 @@ free_ctrl:
 	return ret;
 }
 
-static void imx214_remove(struct i2c_client *client)
+static int imx214_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct imx214 *imx214 = to_imx214(sd);
@@ -1093,6 +1095,8 @@ static void imx214_remove(struct i2c_client *client)
 	pm_runtime_set_suspended(&client->dev);
 
 	mutex_destroy(&imx214->mutex);
+
+	return 0;
 }
 
 static const struct of_device_id imx214_of_match[] = {
@@ -1112,7 +1116,7 @@ static struct i2c_driver imx214_i2c_driver = {
 		.pm = &imx214_pm_ops,
 		.name  = "imx214",
 	},
-	.probe = imx214_probe,
+	.probe_new  = imx214_probe,
 	.remove = imx214_remove,
 };
 

@@ -824,7 +824,7 @@ static void broadsheet_init_display(struct broadsheetfb_par *par)
 
 	broadsheet_burst_write(par, (panel_table[par->panel_index].w *
 					panel_table[par->panel_index].h)/2,
-					(u16 *)par->info->screen_buffer);
+					(u16 *) par->info->screen_base);
 
 	broadsheet_send_command(par, BS_CMD_LD_IMG_END);
 
@@ -865,7 +865,7 @@ static void broadsheetfb_dpy_update_pages(struct broadsheetfb_par *par,
 						u16 y1, u16 y2)
 {
 	u16 args[5];
-	unsigned char *buf = par->info->screen_buffer;
+	unsigned char *buf = (unsigned char *)par->info->screen_base;
 
 	mutex_lock(&(par->io_lock));
 	/* y1 must be a multiple of 4 so drop the lower bits */
@@ -913,7 +913,7 @@ static void broadsheetfb_dpy_update(struct broadsheetfb_par *par)
 	broadsheet_send_cmdargs(par, BS_CMD_WR_REG, 1, args);
 	broadsheet_burst_write(par, (panel_table[par->panel_index].w *
 					panel_table[par->panel_index].h)/2,
-					(u16 *)par->info->screen_buffer);
+					(u16 *) par->info->screen_base);
 
 	broadsheet_send_command(par, BS_CMD_LD_IMG_END);
 
@@ -929,11 +929,13 @@ static void broadsheetfb_dpy_update(struct broadsheetfb_par *par)
 }
 
 /* this is called back from the deferred io workqueue */
-static void broadsheetfb_dpy_deferred_io(struct fb_info *info, struct list_head *pagereflist)
+static void broadsheetfb_dpy_deferred_io(struct fb_info *info,
+				struct list_head *pagelist)
 {
 	u16 y1 = 0, h = 0;
-	unsigned long prev_offset = ULONG_MAX;
-	struct fb_deferred_io_pageref *pageref;
+	int prev_index = -1;
+	struct page *cur;
+	struct fb_deferred_io *fbdefio = info->fbdefio;
 	int h_inc;
 	u16 yres = info->var.yres;
 	u16 xres = info->var.xres;
@@ -942,22 +944,22 @@ static void broadsheetfb_dpy_deferred_io(struct fb_info *info, struct list_head 
 	h_inc = DIV_ROUND_UP(PAGE_SIZE , xres);
 
 	/* walk the written page list and swizzle the data */
-	list_for_each_entry(pageref, pagereflist, list) {
-		if (prev_offset == ULONG_MAX) {
+	list_for_each_entry(cur, &fbdefio->pagelist, lru) {
+		if (prev_index < 0) {
 			/* just starting so assign first page */
-			y1 = pageref->offset / xres;
+			y1 = (cur->index << PAGE_SHIFT) / xres;
 			h = h_inc;
-		} else if ((prev_offset + PAGE_SIZE) == pageref->offset) {
+		} else if ((prev_index + 1) == cur->index) {
 			/* this page is consecutive so increase our height */
 			h += h_inc;
 		} else {
 			/* page not consecutive, issue previous update first */
 			broadsheetfb_dpy_update_pages(info->par, y1, y1 + h);
 			/* start over with our non consecutive page */
-			y1 = pageref->offset / xres;
+			y1 = (cur->index << PAGE_SHIFT) / xres;
 			h = h_inc;
 		}
-		prev_offset = pageref->offset;
+		prev_index = cur->index;
 	}
 
 	/* if we still have any pages to update we do so now */
@@ -1013,8 +1015,8 @@ static ssize_t broadsheetfb_write(struct fb_info *info, const char __user *buf,
 	int err = 0;
 	unsigned long total_size;
 
-	if (!info->screen_buffer)
-		return -ENODEV;
+	if (info->state != FBINFO_STATE_RUNNING)
+		return -EPERM;
 
 	total_size = info->fix.smem_len;
 
@@ -1033,7 +1035,7 @@ static ssize_t broadsheetfb_write(struct fb_info *info, const char __user *buf,
 		count = total_size - p;
 	}
 
-	dst = info->screen_buffer + p;
+	dst = (void *)(info->screen_base + p);
 
 	if (copy_from_user(dst, buf, count))
 		err = -EFAULT;
@@ -1053,13 +1055,11 @@ static const struct fb_ops broadsheetfb_ops = {
 	.fb_fillrect	= broadsheetfb_fillrect,
 	.fb_copyarea	= broadsheetfb_copyarea,
 	.fb_imageblit	= broadsheetfb_imageblit,
-	.fb_mmap	= fb_deferred_io_mmap,
 };
 
 static struct fb_deferred_io broadsheetfb_defio = {
-	.delay			= HZ/4,
-	.sort_pagereflist	= true,
-	.deferred_io		= broadsheetfb_dpy_deferred_io,
+	.delay		= HZ/4,
+	.deferred_io	= broadsheetfb_dpy_deferred_io,
 };
 
 static int broadsheetfb_probe(struct platform_device *dev)
@@ -1109,7 +1109,7 @@ static int broadsheetfb_probe(struct platform_device *dev)
 	if (!videomemory)
 		goto err_fb_rel;
 
-	info->screen_buffer = videomemory;
+	info->screen_base = (char *)videomemory;
 	info->fbops = &broadsheetfb_ops;
 
 	broadsheetfb_var.xres = dpyw;
@@ -1193,7 +1193,7 @@ err:
 
 }
 
-static void broadsheetfb_remove(struct platform_device *dev)
+static int broadsheetfb_remove(struct platform_device *dev)
 {
 	struct fb_info *info = platform_get_drvdata(dev);
 
@@ -1205,15 +1205,16 @@ static void broadsheetfb_remove(struct platform_device *dev)
 		fb_deferred_io_cleanup(info);
 		par->board->cleanup(par);
 		fb_dealloc_cmap(&info->cmap);
-		vfree(info->screen_buffer);
+		vfree((void *)info->screen_base);
 		module_put(par->board->owner);
 		framebuffer_release(info);
 	}
+	return 0;
 }
 
 static struct platform_driver broadsheetfb_driver = {
 	.probe	= broadsheetfb_probe,
-	.remove_new = broadsheetfb_remove,
+	.remove = broadsheetfb_remove,
 	.driver	= {
 		.name	= "broadsheetfb",
 	},
@@ -1223,5 +1224,3 @@ module_platform_driver(broadsheetfb_driver);
 MODULE_DESCRIPTION("fbdev driver for Broadsheet controller");
 MODULE_AUTHOR("Jaya Kumar");
 MODULE_LICENSE("GPL");
-
-MODULE_FIRMWARE("broadsheet.wbf");

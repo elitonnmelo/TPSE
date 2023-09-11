@@ -9,22 +9,25 @@
 
 #include <linux/bitfield.h>
 #include <asm/kvm_pgtable.h>
-#include <asm/stage2_pgtable.h>
 
+#define KVM_PGTABLE_MAX_LEVELS		4U
+
+#define KVM_PTE_VALID			BIT(0)
 
 #define KVM_PTE_TYPE			BIT(1)
 #define KVM_PTE_TYPE_BLOCK		0
 #define KVM_PTE_TYPE_PAGE		1
 #define KVM_PTE_TYPE_TABLE		1
 
+#define KVM_PTE_ADDR_MASK		GENMASK(47, PAGE_SHIFT)
+#define KVM_PTE_ADDR_51_48		GENMASK(15, 12)
+
 #define KVM_PTE_LEAF_ATTR_LO		GENMASK(11, 2)
 
 #define KVM_PTE_LEAF_ATTR_LO_S1_ATTRIDX	GENMASK(4, 2)
 #define KVM_PTE_LEAF_ATTR_LO_S1_AP	GENMASK(7, 6)
-#define KVM_PTE_LEAF_ATTR_LO_S1_AP_RO		\
-	({ cpus_have_final_cap(ARM64_KVM_HVHE) ? 2 : 3; })
-#define KVM_PTE_LEAF_ATTR_LO_S1_AP_RW		\
-	({ cpus_have_final_cap(ARM64_KVM_HVHE) ? 0 : 1; })
+#define KVM_PTE_LEAF_ATTR_LO_S1_AP_RO	3
+#define KVM_PTE_LEAF_ATTR_LO_S1_AP_RW	1
 #define KVM_PTE_LEAF_ATTR_LO_S1_SH	GENMASK(9, 8)
 #define KVM_PTE_LEAF_ATTR_LO_S1_SH_IS	3
 #define KVM_PTE_LEAF_ATTR_LO_S1_AF	BIT(10)
@@ -36,66 +39,46 @@
 #define KVM_PTE_LEAF_ATTR_LO_S2_SH_IS	3
 #define KVM_PTE_LEAF_ATTR_LO_S2_AF	BIT(10)
 
-#define KVM_PTE_LEAF_ATTR_HI		GENMASK(63, 50)
-
-#define KVM_PTE_LEAF_ATTR_HI_SW		GENMASK(58, 55)
+#define KVM_PTE_LEAF_ATTR_HI		GENMASK(63, 51)
 
 #define KVM_PTE_LEAF_ATTR_HI_S1_XN	BIT(54)
 
 #define KVM_PTE_LEAF_ATTR_HI_S2_XN	BIT(54)
 
-#define KVM_PTE_LEAF_ATTR_HI_S1_GP	BIT(50)
-
-#define KVM_PTE_LEAF_ATTR_S2_PERMS	(KVM_PTE_LEAF_ATTR_LO_S2_S2AP_R | \
-					 KVM_PTE_LEAF_ATTR_LO_S2_S2AP_W | \
-					 KVM_PTE_LEAF_ATTR_HI_S2_XN)
-
-#define KVM_INVALID_PTE_OWNER_MASK	GENMASK(9, 2)
-#define KVM_MAX_OWNER_ID		1
-
-/*
- * Used to indicate a pte for which a 'break-before-make' sequence is in
- * progress.
- */
-#define KVM_INVALID_PTE_LOCKED		BIT(10)
-
 struct kvm_pgtable_walk_data {
+	struct kvm_pgtable		*pgt;
 	struct kvm_pgtable_walker	*walker;
 
-	const u64			start;
 	u64				addr;
-	const u64			end;
+	u64				end;
 };
 
-static bool kvm_pgtable_walk_skip_bbm_tlbi(const struct kvm_pgtable_visit_ctx *ctx)
+static u64 kvm_granule_shift(u32 level)
 {
-	return unlikely(ctx->flags & KVM_PGTABLE_WALK_SKIP_BBM_TLBI);
+	/* Assumes KVM_PGTABLE_MAX_LEVELS is 4 */
+	return ARM64_HW_PGTABLE_LEVEL_SHIFT(level);
 }
 
-static bool kvm_pgtable_walk_skip_cmo(const struct kvm_pgtable_visit_ctx *ctx)
+static u64 kvm_granule_size(u32 level)
 {
-	return unlikely(ctx->flags & KVM_PGTABLE_WALK_SKIP_CMO);
+	return BIT(kvm_granule_shift(level));
 }
 
-static bool kvm_phys_is_valid(u64 phys)
+static bool kvm_block_mapping_supported(u64 addr, u64 end, u64 phys, u32 level)
 {
-	return phys < BIT(id_aa64mmfr0_parange_to_phys_shift(ID_AA64MMFR0_EL1_PARANGE_MAX));
-}
+	u64 granule = kvm_granule_size(level);
 
-static bool kvm_block_mapping_supported(const struct kvm_pgtable_visit_ctx *ctx, u64 phys)
-{
-	u64 granule = kvm_granule_size(ctx->level);
-
-	if (!kvm_level_supports_block_mapping(ctx->level))
+	/*
+	 * Reject invalid block mappings and don't bother with 4TB mappings for
+	 * 52-bit PAs.
+	 */
+	if (level == 0 || (PAGE_SIZE != SZ_4K && level == 1))
 		return false;
 
-	if (granule > (ctx->end - ctx->addr))
+	if (granule > (end - addr))
 		return false;
 
-	if (kvm_phys_is_valid(phys) && !IS_ALIGNED(phys, granule))
-		return false;
-
-	return IS_ALIGNED(ctx->addr, granule);
+	return IS_ALIGNED(addr, granule) && IS_ALIGNED(phys, granule);
 }
 
 static u32 kvm_pgtable_idx(struct kvm_pgtable_walk_data *data, u32 level)
@@ -106,12 +89,17 @@ static u32 kvm_pgtable_idx(struct kvm_pgtable_walk_data *data, u32 level)
 	return (data->addr >> shift) & mask;
 }
 
-static u32 kvm_pgd_page_idx(struct kvm_pgtable *pgt, u64 addr)
+static u32 __kvm_pgd_page_idx(struct kvm_pgtable *pgt, u64 addr)
 {
 	u64 shift = kvm_granule_shift(pgt->start_level - 1); /* May underflow */
 	u64 mask = BIT(pgt->ia_bits) - 1;
 
 	return (addr & mask) >> shift;
+}
+
+static u32 kvm_pgd_page_idx(struct kvm_pgtable_walk_data *data)
+{
+	return __kvm_pgd_page_idx(data->pgt, data->addr);
 }
 
 static u32 kvm_pgd_pages(u32 ia_bits, u32 start_level)
@@ -121,7 +109,12 @@ static u32 kvm_pgd_pages(u32 ia_bits, u32 start_level)
 		.start_level	= start_level,
 	};
 
-	return kvm_pgd_page_idx(&pgt, -1ULL) + 1;
+	return __kvm_pgd_page_idx(&pgt, -1ULL) + 1;
+}
+
+static bool kvm_pte_valid(kvm_pte_t pte)
+{
+	return pte & KVM_PTE_VALID;
 }
 
 static bool kvm_pte_table(kvm_pte_t pte, u32 level)
@@ -135,28 +128,52 @@ static bool kvm_pte_table(kvm_pte_t pte, u32 level)
 	return FIELD_GET(KVM_PTE_TYPE, pte) == KVM_PTE_TYPE_TABLE;
 }
 
-static kvm_pte_t *kvm_pte_follow(kvm_pte_t pte, struct kvm_pgtable_mm_ops *mm_ops)
+static u64 kvm_pte_to_phys(kvm_pte_t pte)
 {
-	return mm_ops->phys_to_virt(kvm_pte_to_phys(pte));
+	u64 pa = pte & KVM_PTE_ADDR_MASK;
+
+	if (PAGE_SHIFT == 16)
+		pa |= FIELD_GET(KVM_PTE_ADDR_51_48, pte) << 48;
+
+	return pa;
 }
 
-static void kvm_clear_pte(kvm_pte_t *ptep)
+static kvm_pte_t kvm_phys_to_pte(u64 pa)
 {
-	WRITE_ONCE(*ptep, 0);
-}
+	kvm_pte_t pte = pa & KVM_PTE_ADDR_MASK;
 
-static kvm_pte_t kvm_init_table_pte(kvm_pte_t *childp, struct kvm_pgtable_mm_ops *mm_ops)
-{
-	kvm_pte_t pte = kvm_phys_to_pte(mm_ops->virt_to_phys(childp));
+	if (PAGE_SHIFT == 16)
+		pte |= FIELD_PREP(KVM_PTE_ADDR_51_48, pa >> 48);
 
-	pte |= FIELD_PREP(KVM_PTE_TYPE, KVM_PTE_TYPE_TABLE);
-	pte |= KVM_PTE_VALID;
 	return pte;
 }
 
-static kvm_pte_t kvm_init_valid_leaf_pte(u64 pa, kvm_pte_t attr, u32 level)
+static kvm_pte_t *kvm_pte_follow(kvm_pte_t pte)
 {
-	kvm_pte_t pte = kvm_phys_to_pte(pa);
+	return __va(kvm_pte_to_phys(pte));
+}
+
+static void kvm_set_invalid_pte(kvm_pte_t *ptep)
+{
+	kvm_pte_t pte = *ptep;
+	WRITE_ONCE(*ptep, pte & ~KVM_PTE_VALID);
+}
+
+static void kvm_set_table_pte(kvm_pte_t *ptep, kvm_pte_t *childp)
+{
+	kvm_pte_t old = *ptep, pte = kvm_phys_to_pte(__pa(childp));
+
+	pte |= FIELD_PREP(KVM_PTE_TYPE, KVM_PTE_TYPE_TABLE);
+	pte |= KVM_PTE_VALID;
+
+	WARN_ON(kvm_pte_valid(old));
+	smp_store_release(ptep, pte);
+}
+
+static bool kvm_set_valid_leaf_pte(kvm_pte_t *ptep, u64 pa, kvm_pte_t attr,
+				   u32 level)
+{
+	kvm_pte_t old = *ptep, pte = kvm_phys_to_pte(pa);
 	u64 type = (level == KVM_PGTABLE_MAX_LEVELS - 1) ? KVM_PTE_TYPE_PAGE :
 							   KVM_PTE_TYPE_BLOCK;
 
@@ -164,90 +181,47 @@ static kvm_pte_t kvm_init_valid_leaf_pte(u64 pa, kvm_pte_t attr, u32 level)
 	pte |= FIELD_PREP(KVM_PTE_TYPE, type);
 	pte |= KVM_PTE_VALID;
 
-	return pte;
+	/* Tolerate KVM recreating the exact same mapping. */
+	if (kvm_pte_valid(old))
+		return old == pte;
+
+	smp_store_release(ptep, pte);
+	return true;
 }
 
-static kvm_pte_t kvm_init_invalid_leaf_owner(u8 owner_id)
-{
-	return FIELD_PREP(KVM_INVALID_PTE_OWNER_MASK, owner_id);
-}
-
-static int kvm_pgtable_visitor_cb(struct kvm_pgtable_walk_data *data,
-				  const struct kvm_pgtable_visit_ctx *ctx,
-				  enum kvm_pgtable_walk_flags visit)
+static int kvm_pgtable_visitor_cb(struct kvm_pgtable_walk_data *data, u64 addr,
+				  u32 level, kvm_pte_t *ptep,
+				  enum kvm_pgtable_walk_flags flag)
 {
 	struct kvm_pgtable_walker *walker = data->walker;
-
-	/* Ensure the appropriate lock is held (e.g. RCU lock for stage-2 MMU) */
-	WARN_ON_ONCE(kvm_pgtable_walk_shared(ctx) && !kvm_pgtable_walk_lock_held());
-	return walker->cb(ctx, visit);
-}
-
-static bool kvm_pgtable_walk_continue(const struct kvm_pgtable_walker *walker,
-				      int r)
-{
-	/*
-	 * Visitor callbacks return EAGAIN when the conditions that led to a
-	 * fault are no longer reflected in the page tables due to a race to
-	 * update a PTE. In the context of a fault handler this is interpreted
-	 * as a signal to retry guest execution.
-	 *
-	 * Ignore the return code altogether for walkers outside a fault handler
-	 * (e.g. write protecting a range of memory) and chug along with the
-	 * page table walk.
-	 */
-	if (r == -EAGAIN)
-		return !(walker->flags & KVM_PGTABLE_WALK_HANDLE_FAULT);
-
-	return !r;
+	return walker->cb(addr, data->end, level, ptep, flag, walker->arg);
 }
 
 static int __kvm_pgtable_walk(struct kvm_pgtable_walk_data *data,
-			      struct kvm_pgtable_mm_ops *mm_ops, kvm_pteref_t pgtable, u32 level);
+			      kvm_pte_t *pgtable, u32 level);
 
 static inline int __kvm_pgtable_visit(struct kvm_pgtable_walk_data *data,
-				      struct kvm_pgtable_mm_ops *mm_ops,
-				      kvm_pteref_t pteref, u32 level)
+				      kvm_pte_t *ptep, u32 level)
 {
-	enum kvm_pgtable_walk_flags flags = data->walker->flags;
-	kvm_pte_t *ptep = kvm_dereference_pteref(data->walker, pteref);
-	struct kvm_pgtable_visit_ctx ctx = {
-		.ptep	= ptep,
-		.old	= READ_ONCE(*ptep),
-		.arg	= data->walker->arg,
-		.mm_ops	= mm_ops,
-		.start	= data->start,
-		.addr	= data->addr,
-		.end	= data->end,
-		.level	= level,
-		.flags	= flags,
-	};
 	int ret = 0;
-	bool reload = false;
-	kvm_pteref_t childp;
-	bool table = kvm_pte_table(ctx.old, level);
+	u64 addr = data->addr;
+	kvm_pte_t *childp, pte = *ptep;
+	bool table = kvm_pte_table(pte, level);
+	enum kvm_pgtable_walk_flags flags = data->walker->flags;
 
-	if (table && (ctx.flags & KVM_PGTABLE_WALK_TABLE_PRE)) {
-		ret = kvm_pgtable_visitor_cb(data, &ctx, KVM_PGTABLE_WALK_TABLE_PRE);
-		reload = true;
+	if (table && (flags & KVM_PGTABLE_WALK_TABLE_PRE)) {
+		ret = kvm_pgtable_visitor_cb(data, addr, level, ptep,
+					     KVM_PGTABLE_WALK_TABLE_PRE);
 	}
 
-	if (!table && (ctx.flags & KVM_PGTABLE_WALK_LEAF)) {
-		ret = kvm_pgtable_visitor_cb(data, &ctx, KVM_PGTABLE_WALK_LEAF);
-		reload = true;
+	if (!table && (flags & KVM_PGTABLE_WALK_LEAF)) {
+		ret = kvm_pgtable_visitor_cb(data, addr, level, ptep,
+					     KVM_PGTABLE_WALK_LEAF);
+		pte = *ptep;
+		table = kvm_pte_table(pte, level);
 	}
 
-	/*
-	 * Reload the page table after invoking the walker callback for leaf
-	 * entries or after pre-order traversal, to allow the walker to descend
-	 * into a newly installed or replaced table.
-	 */
-	if (reload) {
-		ctx.old = READ_ONCE(*ptep);
-		table = kvm_pte_table(ctx.old, level);
-	}
-
-	if (!kvm_pgtable_walk_continue(data->walker, ret))
+	if (ret)
 		goto out;
 
 	if (!table) {
@@ -256,23 +230,22 @@ static inline int __kvm_pgtable_visit(struct kvm_pgtable_walk_data *data,
 		goto out;
 	}
 
-	childp = (kvm_pteref_t)kvm_pte_follow(ctx.old, mm_ops);
-	ret = __kvm_pgtable_walk(data, mm_ops, childp, level + 1);
-	if (!kvm_pgtable_walk_continue(data->walker, ret))
+	childp = kvm_pte_follow(pte);
+	ret = __kvm_pgtable_walk(data, childp, level + 1);
+	if (ret)
 		goto out;
 
-	if (ctx.flags & KVM_PGTABLE_WALK_TABLE_POST)
-		ret = kvm_pgtable_visitor_cb(data, &ctx, KVM_PGTABLE_WALK_TABLE_POST);
+	if (flags & KVM_PGTABLE_WALK_TABLE_POST) {
+		ret = kvm_pgtable_visitor_cb(data, addr, level, ptep,
+					     KVM_PGTABLE_WALK_TABLE_POST);
+	}
 
 out:
-	if (kvm_pgtable_walk_continue(data->walker, ret))
-		return 0;
-
 	return ret;
 }
 
 static int __kvm_pgtable_walk(struct kvm_pgtable_walk_data *data,
-			      struct kvm_pgtable_mm_ops *mm_ops, kvm_pteref_t pgtable, u32 level)
+			      kvm_pte_t *pgtable, u32 level)
 {
 	u32 idx;
 	int ret = 0;
@@ -281,12 +254,12 @@ static int __kvm_pgtable_walk(struct kvm_pgtable_walk_data *data,
 		return -EINVAL;
 
 	for (idx = kvm_pgtable_idx(data, level); idx < PTRS_PER_PTE; ++idx) {
-		kvm_pteref_t pteref = &pgtable[idx];
+		kvm_pte_t *ptep = &pgtable[idx];
 
 		if (data->addr >= data->end)
 			break;
 
-		ret = __kvm_pgtable_visit(data, mm_ops, pteref, level);
+		ret = __kvm_pgtable_visit(data, ptep, level);
 		if (ret)
 			break;
 	}
@@ -294,10 +267,11 @@ static int __kvm_pgtable_walk(struct kvm_pgtable_walk_data *data,
 	return ret;
 }
 
-static int _kvm_pgtable_walk(struct kvm_pgtable *pgt, struct kvm_pgtable_walk_data *data)
+static int _kvm_pgtable_walk(struct kvm_pgtable_walk_data *data)
 {
 	u32 idx;
 	int ret = 0;
+	struct kvm_pgtable *pgt = data->pgt;
 	u64 limit = BIT(pgt->ia_bits);
 
 	if (data->addr > limit || data->end > limit)
@@ -306,10 +280,10 @@ static int _kvm_pgtable_walk(struct kvm_pgtable *pgt, struct kvm_pgtable_walk_da
 	if (!pgt->pgd)
 		return -EINVAL;
 
-	for (idx = kvm_pgd_page_idx(pgt, data->addr); data->addr < data->end; ++idx) {
-		kvm_pteref_t pteref = &pgt->pgd[idx * PTRS_PER_PTE];
+	for (idx = kvm_pgd_page_idx(data); data->addr < data->end; ++idx) {
+		kvm_pte_t *ptep = &pgt->pgd[idx * PTRS_PER_PTE];
 
-		ret = __kvm_pgtable_walk(data, pgt->mm_ops, pteref, pgt->start_level);
+		ret = __kvm_pgtable_walk(data, ptep, pgt->start_level);
 		if (ret)
 			break;
 	}
@@ -321,68 +295,22 @@ int kvm_pgtable_walk(struct kvm_pgtable *pgt, u64 addr, u64 size,
 		     struct kvm_pgtable_walker *walker)
 {
 	struct kvm_pgtable_walk_data walk_data = {
-		.start	= ALIGN_DOWN(addr, PAGE_SIZE),
+		.pgt	= pgt,
 		.addr	= ALIGN_DOWN(addr, PAGE_SIZE),
 		.end	= PAGE_ALIGN(walk_data.addr + size),
 		.walker	= walker,
 	};
-	int r;
 
-	r = kvm_pgtable_walk_begin(walker);
-	if (r)
-		return r;
-
-	r = _kvm_pgtable_walk(pgt, &walk_data);
-	kvm_pgtable_walk_end(walker);
-
-	return r;
-}
-
-struct leaf_walk_data {
-	kvm_pte_t	pte;
-	u32		level;
-};
-
-static int leaf_walker(const struct kvm_pgtable_visit_ctx *ctx,
-		       enum kvm_pgtable_walk_flags visit)
-{
-	struct leaf_walk_data *data = ctx->arg;
-
-	data->pte   = ctx->old;
-	data->level = ctx->level;
-
-	return 0;
-}
-
-int kvm_pgtable_get_leaf(struct kvm_pgtable *pgt, u64 addr,
-			 kvm_pte_t *ptep, u32 *level)
-{
-	struct leaf_walk_data data;
-	struct kvm_pgtable_walker walker = {
-		.cb	= leaf_walker,
-		.flags	= KVM_PGTABLE_WALK_LEAF,
-		.arg	= &data,
-	};
-	int ret;
-
-	ret = kvm_pgtable_walk(pgt, ALIGN_DOWN(addr, PAGE_SIZE),
-			       PAGE_SIZE, &walker);
-	if (!ret) {
-		if (ptep)
-			*ptep  = data.pte;
-		if (level)
-			*level = data.level;
-	}
-
-	return ret;
+	return _kvm_pgtable_walk(&walk_data);
 }
 
 struct hyp_map_data {
-	const u64			phys;
-	kvm_pte_t			attr;
+	u64		phys;
+	kvm_pte_t	attr;
 };
 
-static int hyp_set_prot_attr(enum kvm_pgtable_prot prot, kvm_pte_t *ptep)
+static int hyp_map_set_prot_attr(enum kvm_pgtable_prot prot,
+				 struct hyp_map_data *data)
 {
 	bool device = prot & KVM_PGTABLE_PROT_DEVICE;
 	u32 mtype = device ? MT_DEVICE_nGnRE : MT_NORMAL;
@@ -400,9 +328,6 @@ static int hyp_set_prot_attr(enum kvm_pgtable_prot prot, kvm_pte_t *ptep)
 
 		if (device)
 			return -EINVAL;
-
-		if (IS_ENABLED(CONFIG_ARM64_BTI_KERNEL) && system_supports_bti())
-			attr |= KVM_PTE_LEAF_ATTR_HI_S1_GP;
 	} else {
 		attr |= KVM_PTE_LEAF_ATTR_HI_S1_XN;
 	}
@@ -410,74 +335,39 @@ static int hyp_set_prot_attr(enum kvm_pgtable_prot prot, kvm_pte_t *ptep)
 	attr |= FIELD_PREP(KVM_PTE_LEAF_ATTR_LO_S1_AP, ap);
 	attr |= FIELD_PREP(KVM_PTE_LEAF_ATTR_LO_S1_SH, sh);
 	attr |= KVM_PTE_LEAF_ATTR_LO_S1_AF;
-	attr |= prot & KVM_PTE_LEAF_ATTR_HI_SW;
-	*ptep = attr;
-
+	data->attr = attr;
 	return 0;
 }
 
-enum kvm_pgtable_prot kvm_pgtable_hyp_pte_prot(kvm_pte_t pte)
+static bool hyp_map_walker_try_leaf(u64 addr, u64 end, u32 level,
+				    kvm_pte_t *ptep, struct hyp_map_data *data)
 {
-	enum kvm_pgtable_prot prot = pte & KVM_PTE_LEAF_ATTR_HI_SW;
-	u32 ap;
+	u64 granule = kvm_granule_size(level), phys = data->phys;
 
-	if (!kvm_pte_valid(pte))
-		return prot;
-
-	if (!(pte & KVM_PTE_LEAF_ATTR_HI_S1_XN))
-		prot |= KVM_PGTABLE_PROT_X;
-
-	ap = FIELD_GET(KVM_PTE_LEAF_ATTR_LO_S1_AP, pte);
-	if (ap == KVM_PTE_LEAF_ATTR_LO_S1_AP_RO)
-		prot |= KVM_PGTABLE_PROT_R;
-	else if (ap == KVM_PTE_LEAF_ATTR_LO_S1_AP_RW)
-		prot |= KVM_PGTABLE_PROT_RW;
-
-	return prot;
-}
-
-static bool hyp_map_walker_try_leaf(const struct kvm_pgtable_visit_ctx *ctx,
-				    struct hyp_map_data *data)
-{
-	u64 phys = data->phys + (ctx->addr - ctx->start);
-	kvm_pte_t new;
-
-	if (!kvm_block_mapping_supported(ctx, phys))
+	if (!kvm_block_mapping_supported(addr, end, phys, level))
 		return false;
 
-	new = kvm_init_valid_leaf_pte(phys, data->attr, ctx->level);
-	if (ctx->old == new)
-		return true;
-	if (!kvm_pte_valid(ctx->old))
-		ctx->mm_ops->get_page(ctx->ptep);
-	else if (WARN_ON((ctx->old ^ new) & ~KVM_PTE_LEAF_ATTR_HI_SW))
-		return false;
-
-	smp_store_release(ctx->ptep, new);
+	WARN_ON(!kvm_set_valid_leaf_pte(ptep, phys, data->attr, level));
+	data->phys += granule;
 	return true;
 }
 
-static int hyp_map_walker(const struct kvm_pgtable_visit_ctx *ctx,
-			  enum kvm_pgtable_walk_flags visit)
+static int hyp_map_walker(u64 addr, u64 end, u32 level, kvm_pte_t *ptep,
+			  enum kvm_pgtable_walk_flags flag, void * const arg)
 {
-	kvm_pte_t *childp, new;
-	struct hyp_map_data *data = ctx->arg;
-	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
+	kvm_pte_t *childp;
 
-	if (hyp_map_walker_try_leaf(ctx, data))
+	if (hyp_map_walker_try_leaf(addr, end, level, ptep, arg))
 		return 0;
 
-	if (WARN_ON(ctx->level == KVM_PGTABLE_MAX_LEVELS - 1))
+	if (WARN_ON(level == KVM_PGTABLE_MAX_LEVELS - 1))
 		return -EINVAL;
 
-	childp = (kvm_pte_t *)mm_ops->zalloc_page(NULL);
+	childp = (kvm_pte_t *)get_zeroed_page(GFP_KERNEL);
 	if (!childp)
 		return -ENOMEM;
 
-	new = kvm_init_table_pte(childp, mm_ops);
-	mm_ops->get_page(ctx->ptep);
-	smp_store_release(ctx->ptep, new);
-
+	kvm_set_table_pte(ptep, childp);
 	return 0;
 }
 
@@ -494,7 +384,7 @@ int kvm_pgtable_hyp_map(struct kvm_pgtable *pgt, u64 addr, u64 size, u64 phys,
 		.arg	= &map_data,
 	};
 
-	ret = hyp_set_prot_attr(prot, &map_data.attr);
+	ret = hyp_map_set_prot_attr(prot, &map_data);
 	if (ret)
 		return ret;
 
@@ -504,93 +394,24 @@ int kvm_pgtable_hyp_map(struct kvm_pgtable *pgt, u64 addr, u64 size, u64 phys,
 	return ret;
 }
 
-static int hyp_unmap_walker(const struct kvm_pgtable_visit_ctx *ctx,
-			    enum kvm_pgtable_walk_flags visit)
-{
-	kvm_pte_t *childp = NULL;
-	u64 granule = kvm_granule_size(ctx->level);
-	u64 *unmapped = ctx->arg;
-	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
-
-	if (!kvm_pte_valid(ctx->old))
-		return -EINVAL;
-
-	if (kvm_pte_table(ctx->old, ctx->level)) {
-		childp = kvm_pte_follow(ctx->old, mm_ops);
-
-		if (mm_ops->page_count(childp) != 1)
-			return 0;
-
-		kvm_clear_pte(ctx->ptep);
-		dsb(ishst);
-		__tlbi_level(vae2is, __TLBI_VADDR(ctx->addr, 0), ctx->level);
-	} else {
-		if (ctx->end - ctx->addr < granule)
-			return -EINVAL;
-
-		kvm_clear_pte(ctx->ptep);
-		dsb(ishst);
-		__tlbi_level(vale2is, __TLBI_VADDR(ctx->addr, 0), ctx->level);
-		*unmapped += granule;
-	}
-
-	dsb(ish);
-	isb();
-	mm_ops->put_page(ctx->ptep);
-
-	if (childp)
-		mm_ops->put_page(childp);
-
-	return 0;
-}
-
-u64 kvm_pgtable_hyp_unmap(struct kvm_pgtable *pgt, u64 addr, u64 size)
-{
-	u64 unmapped = 0;
-	struct kvm_pgtable_walker walker = {
-		.cb	= hyp_unmap_walker,
-		.arg	= &unmapped,
-		.flags	= KVM_PGTABLE_WALK_LEAF | KVM_PGTABLE_WALK_TABLE_POST,
-	};
-
-	if (!pgt->mm_ops->page_count)
-		return 0;
-
-	kvm_pgtable_walk(pgt, addr, size, &walker);
-	return unmapped;
-}
-
-int kvm_pgtable_hyp_init(struct kvm_pgtable *pgt, u32 va_bits,
-			 struct kvm_pgtable_mm_ops *mm_ops)
+int kvm_pgtable_hyp_init(struct kvm_pgtable *pgt, u32 va_bits)
 {
 	u64 levels = ARM64_HW_PGTABLE_LEVELS(va_bits);
 
-	pgt->pgd = (kvm_pteref_t)mm_ops->zalloc_page(NULL);
+	pgt->pgd = (kvm_pte_t *)get_zeroed_page(GFP_KERNEL);
 	if (!pgt->pgd)
 		return -ENOMEM;
 
 	pgt->ia_bits		= va_bits;
 	pgt->start_level	= KVM_PGTABLE_MAX_LEVELS - levels;
-	pgt->mm_ops		= mm_ops;
 	pgt->mmu		= NULL;
-	pgt->force_pte_cb	= NULL;
-
 	return 0;
 }
 
-static int hyp_free_walker(const struct kvm_pgtable_visit_ctx *ctx,
-			   enum kvm_pgtable_walk_flags visit)
+static int hyp_free_walker(u64 addr, u64 end, u32 level, kvm_pte_t *ptep,
+			   enum kvm_pgtable_walk_flags flag, void * const arg)
 {
-	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
-
-	if (!kvm_pte_valid(ctx->old))
-		return 0;
-
-	mm_ops->put_page(ctx->ptep);
-
-	if (kvm_pte_table(ctx->old, ctx->level))
-		mm_ops->put_page(kvm_pte_follow(ctx->old, mm_ops));
-
+	free_page((unsigned long)kvm_pte_follow(*ptep));
 	return 0;
 }
 
@@ -598,86 +419,30 @@ void kvm_pgtable_hyp_destroy(struct kvm_pgtable *pgt)
 {
 	struct kvm_pgtable_walker walker = {
 		.cb	= hyp_free_walker,
-		.flags	= KVM_PGTABLE_WALK_LEAF | KVM_PGTABLE_WALK_TABLE_POST,
+		.flags	= KVM_PGTABLE_WALK_TABLE_POST,
 	};
 
 	WARN_ON(kvm_pgtable_walk(pgt, 0, BIT(pgt->ia_bits), &walker));
-	pgt->mm_ops->put_page(kvm_dereference_pteref(&walker, pgt->pgd));
+	free_page((unsigned long)pgt->pgd);
 	pgt->pgd = NULL;
 }
 
 struct stage2_map_data {
-	const u64			phys;
+	u64				phys;
 	kvm_pte_t			attr;
-	u8				owner_id;
 
 	kvm_pte_t			*anchor;
-	kvm_pte_t			*childp;
 
 	struct kvm_s2_mmu		*mmu;
-	void				*memcache;
-
-	/* Force mappings to page granularity */
-	bool				force_pte;
+	struct kvm_mmu_memory_cache	*memcache;
 };
 
-u64 kvm_get_vtcr(u64 mmfr0, u64 mmfr1, u32 phys_shift)
-{
-	u64 vtcr = VTCR_EL2_FLAGS;
-	u8 lvls;
-
-	vtcr |= kvm_get_parange(mmfr0) << VTCR_EL2_PS_SHIFT;
-	vtcr |= VTCR_EL2_T0SZ(phys_shift);
-	/*
-	 * Use a minimum 2 level page table to prevent splitting
-	 * host PMD huge pages at stage2.
-	 */
-	lvls = stage2_pgtable_levels(phys_shift);
-	if (lvls < 2)
-		lvls = 2;
-	vtcr |= VTCR_EL2_LVLS_TO_SL0(lvls);
-
-#ifdef CONFIG_ARM64_HW_AFDBM
-	/*
-	 * Enable the Hardware Access Flag management, unconditionally
-	 * on all CPUs. In systems that have asymmetric support for the feature
-	 * this allows KVM to leverage hardware support on the subset of cores
-	 * that implement the feature.
-	 *
-	 * The architecture requires VTCR_EL2.HA to be RES0 (thus ignored by
-	 * hardware) on implementations that do not advertise support for the
-	 * feature. As such, setting HA unconditionally is safe, unless you
-	 * happen to be running on a design that has unadvertised support for
-	 * HAFDBS. Here be dragons.
-	 */
-	if (!cpus_have_final_cap(ARM64_WORKAROUND_AMPERE_AC03_CPU_38))
-		vtcr |= VTCR_EL2_HA;
-#endif /* CONFIG_ARM64_HW_AFDBM */
-
-	/* Set the vmid bits */
-	vtcr |= (get_vmid_bits(mmfr1) == 16) ?
-		VTCR_EL2_VS_16BIT :
-		VTCR_EL2_VS_8BIT;
-
-	return vtcr;
-}
-
-static bool stage2_has_fwb(struct kvm_pgtable *pgt)
-{
-	if (!cpus_have_const_cap(ARM64_HAS_STAGE2_FWB))
-		return false;
-
-	return !(pgt->flags & KVM_PGTABLE_S2_NOFWB);
-}
-
-#define KVM_S2_MEMATTR(pgt, attr) PAGE_S2_MEMATTR(attr, stage2_has_fwb(pgt))
-
-static int stage2_set_prot_attr(struct kvm_pgtable *pgt, enum kvm_pgtable_prot prot,
-				kvm_pte_t *ptep)
+static int stage2_map_set_prot_attr(enum kvm_pgtable_prot prot,
+				    struct stage2_map_data *data)
 {
 	bool device = prot & KVM_PGTABLE_PROT_DEVICE;
-	kvm_pte_t attr = device ? KVM_S2_MEMATTR(pgt, DEVICE_nGnRE) :
-			    KVM_S2_MEMATTR(pgt, NORMAL);
+	kvm_pte_t attr = device ? PAGE_S2_MEMATTR(DEVICE_nGnRE) :
+			    PAGE_S2_MEMATTR(NORMAL);
 	u32 sh = KVM_PTE_LEAF_ATTR_LO_S2_SH_IS;
 
 	if (!(prot & KVM_PGTABLE_PROT_X))
@@ -693,326 +458,181 @@ static int stage2_set_prot_attr(struct kvm_pgtable *pgt, enum kvm_pgtable_prot p
 
 	attr |= FIELD_PREP(KVM_PTE_LEAF_ATTR_LO_S2_SH, sh);
 	attr |= KVM_PTE_LEAF_ATTR_LO_S2_AF;
-	attr |= prot & KVM_PTE_LEAF_ATTR_HI_SW;
-	*ptep = attr;
-
+	data->attr = attr;
 	return 0;
 }
 
-enum kvm_pgtable_prot kvm_pgtable_stage2_pte_prot(kvm_pte_t pte)
+static bool stage2_map_walker_try_leaf(u64 addr, u64 end, u32 level,
+				       kvm_pte_t *ptep,
+				       struct stage2_map_data *data)
 {
-	enum kvm_pgtable_prot prot = pte & KVM_PTE_LEAF_ATTR_HI_SW;
+	u64 granule = kvm_granule_size(level), phys = data->phys;
 
-	if (!kvm_pte_valid(pte))
-		return prot;
+	if (!kvm_block_mapping_supported(addr, end, phys, level))
+		return false;
 
-	if (pte & KVM_PTE_LEAF_ATTR_LO_S2_S2AP_R)
-		prot |= KVM_PGTABLE_PROT_R;
-	if (pte & KVM_PTE_LEAF_ATTR_LO_S2_S2AP_W)
-		prot |= KVM_PGTABLE_PROT_W;
-	if (!(pte & KVM_PTE_LEAF_ATTR_HI_S2_XN))
-		prot |= KVM_PGTABLE_PROT_X;
-
-	return prot;
-}
-
-static bool stage2_pte_needs_update(kvm_pte_t old, kvm_pte_t new)
-{
-	if (!kvm_pte_valid(old) || !kvm_pte_valid(new))
-		return true;
-
-	return ((old ^ new) & (~KVM_PTE_LEAF_ATTR_S2_PERMS));
-}
-
-static bool stage2_pte_is_counted(kvm_pte_t pte)
-{
 	/*
-	 * The refcount tracks valid entries as well as invalid entries if they
-	 * encode ownership of a page to another entity than the page-table
-	 * owner, whose id is 0.
+	 * If the PTE was already valid, drop the refcount on the table
+	 * early, as it will be bumped-up again in stage2_map_walk_leaf().
+	 * This ensures that the refcount stays constant across a valid to
+	 * valid PTE update.
 	 */
-	return !!pte;
-}
+	if (kvm_pte_valid(*ptep))
+		put_page(virt_to_page(ptep));
 
-static bool stage2_pte_is_locked(kvm_pte_t pte)
-{
-	return !kvm_pte_valid(pte) && (pte & KVM_INVALID_PTE_LOCKED);
-}
+	if (kvm_set_valid_leaf_pte(ptep, phys, data->attr, level))
+		goto out;
 
-static bool stage2_try_set_pte(const struct kvm_pgtable_visit_ctx *ctx, kvm_pte_t new)
-{
-	if (!kvm_pgtable_walk_shared(ctx)) {
-		WRITE_ONCE(*ctx->ptep, new);
-		return true;
-	}
-
-	return cmpxchg(ctx->ptep, ctx->old, new) == ctx->old;
-}
-
-/**
- * stage2_try_break_pte() - Invalidates a pte according to the
- *			    'break-before-make' requirements of the
- *			    architecture.
- *
- * @ctx: context of the visited pte.
- * @mmu: stage-2 mmu
- *
- * Returns: true if the pte was successfully broken.
- *
- * If the removed pte was valid, performs the necessary serialization and TLB
- * invalidation for the old value. For counted ptes, drops the reference count
- * on the containing table page.
- */
-static bool stage2_try_break_pte(const struct kvm_pgtable_visit_ctx *ctx,
-				 struct kvm_s2_mmu *mmu)
-{
-	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
-
-	if (stage2_pte_is_locked(ctx->old)) {
-		/*
-		 * Should never occur if this walker has exclusive access to the
-		 * page tables.
-		 */
-		WARN_ON(!kvm_pgtable_walk_shared(ctx));
-		return false;
-	}
-
-	if (!stage2_try_set_pte(ctx, KVM_INVALID_PTE_LOCKED))
-		return false;
-
-	if (!kvm_pgtable_walk_skip_bbm_tlbi(ctx)) {
-		/*
-		 * Perform the appropriate TLB invalidation based on the
-		 * evicted pte value (if any).
-		 */
-		if (kvm_pte_table(ctx->old, ctx->level))
-			kvm_call_hyp(__kvm_tlb_flush_vmid, mmu);
-		else if (kvm_pte_valid(ctx->old))
-			kvm_call_hyp(__kvm_tlb_flush_vmid_ipa, mmu,
-				     ctx->addr, ctx->level);
-	}
-
-	if (stage2_pte_is_counted(ctx->old))
-		mm_ops->put_page(ctx->ptep);
-
+	/* There's an existing valid leaf entry, so perform break-before-make */
+	kvm_set_invalid_pte(ptep);
+	kvm_call_hyp(__kvm_tlb_flush_vmid_ipa, data->mmu, addr, level);
+	kvm_set_valid_leaf_pte(ptep, phys, data->attr, level);
+out:
+	data->phys += granule;
 	return true;
 }
 
-static void stage2_make_pte(const struct kvm_pgtable_visit_ctx *ctx, kvm_pte_t new)
-{
-	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
-
-	WARN_ON(!stage2_pte_is_locked(*ctx->ptep));
-
-	if (stage2_pte_is_counted(new))
-		mm_ops->get_page(ctx->ptep);
-
-	smp_store_release(ctx->ptep, new);
-}
-
-static void stage2_put_pte(const struct kvm_pgtable_visit_ctx *ctx, struct kvm_s2_mmu *mmu,
-			   struct kvm_pgtable_mm_ops *mm_ops)
-{
-	/*
-	 * Clear the existing PTE, and perform break-before-make with
-	 * TLB maintenance if it was valid.
-	 */
-	if (kvm_pte_valid(ctx->old)) {
-		kvm_clear_pte(ctx->ptep);
-		kvm_call_hyp(__kvm_tlb_flush_vmid_ipa, mmu, ctx->addr, ctx->level);
-	}
-
-	mm_ops->put_page(ctx->ptep);
-}
-
-static bool stage2_pte_cacheable(struct kvm_pgtable *pgt, kvm_pte_t pte)
-{
-	u64 memattr = pte & KVM_PTE_LEAF_ATTR_LO_S2_MEMATTR;
-	return memattr == KVM_S2_MEMATTR(pgt, NORMAL);
-}
-
-static bool stage2_pte_executable(kvm_pte_t pte)
-{
-	return !(pte & KVM_PTE_LEAF_ATTR_HI_S2_XN);
-}
-
-static u64 stage2_map_walker_phys_addr(const struct kvm_pgtable_visit_ctx *ctx,
-				       const struct stage2_map_data *data)
-{
-	u64 phys = data->phys;
-
-	/*
-	 * Stage-2 walks to update ownership data are communicated to the map
-	 * walker using an invalid PA. Avoid offsetting an already invalid PA,
-	 * which could overflow and make the address valid again.
-	 */
-	if (!kvm_phys_is_valid(phys))
-		return phys;
-
-	/*
-	 * Otherwise, work out the correct PA based on how far the walk has
-	 * gotten.
-	 */
-	return phys + (ctx->addr - ctx->start);
-}
-
-static bool stage2_leaf_mapping_allowed(const struct kvm_pgtable_visit_ctx *ctx,
-					struct stage2_map_data *data)
-{
-	u64 phys = stage2_map_walker_phys_addr(ctx, data);
-
-	if (data->force_pte && (ctx->level < (KVM_PGTABLE_MAX_LEVELS - 1)))
-		return false;
-
-	return kvm_block_mapping_supported(ctx, phys);
-}
-
-static int stage2_map_walker_try_leaf(const struct kvm_pgtable_visit_ctx *ctx,
-				      struct stage2_map_data *data)
-{
-	kvm_pte_t new;
-	u64 phys = stage2_map_walker_phys_addr(ctx, data);
-	u64 granule = kvm_granule_size(ctx->level);
-	struct kvm_pgtable *pgt = data->mmu->pgt;
-	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
-
-	if (!stage2_leaf_mapping_allowed(ctx, data))
-		return -E2BIG;
-
-	if (kvm_phys_is_valid(phys))
-		new = kvm_init_valid_leaf_pte(phys, data->attr, ctx->level);
-	else
-		new = kvm_init_invalid_leaf_owner(data->owner_id);
-
-	/*
-	 * Skip updating the PTE if we are trying to recreate the exact
-	 * same mapping or only change the access permissions. Instead,
-	 * the vCPU will exit one more time from guest if still needed
-	 * and then go through the path of relaxing permissions.
-	 */
-	if (!stage2_pte_needs_update(ctx->old, new))
-		return -EAGAIN;
-
-	if (!stage2_try_break_pte(ctx, data->mmu))
-		return -EAGAIN;
-
-	/* Perform CMOs before installation of the guest stage-2 PTE */
-	if (!kvm_pgtable_walk_skip_cmo(ctx) && mm_ops->dcache_clean_inval_poc &&
-	    stage2_pte_cacheable(pgt, new))
-		mm_ops->dcache_clean_inval_poc(kvm_pte_follow(new, mm_ops),
-					       granule);
-
-	if (!kvm_pgtable_walk_skip_cmo(ctx) && mm_ops->icache_inval_pou &&
-	    stage2_pte_executable(new))
-		mm_ops->icache_inval_pou(kvm_pte_follow(new, mm_ops), granule);
-
-	stage2_make_pte(ctx, new);
-
-	return 0;
-}
-
-static int stage2_map_walk_table_pre(const struct kvm_pgtable_visit_ctx *ctx,
+static int stage2_map_walk_table_pre(u64 addr, u64 end, u32 level,
+				     kvm_pte_t *ptep,
 				     struct stage2_map_data *data)
 {
-	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
-	kvm_pte_t *childp = kvm_pte_follow(ctx->old, mm_ops);
-	int ret;
-
-	if (!stage2_leaf_mapping_allowed(ctx, data))
+	if (data->anchor)
 		return 0;
 
-	ret = stage2_map_walker_try_leaf(ctx, data);
-	if (ret)
-		return ret;
+	if (!kvm_block_mapping_supported(addr, end, data->phys, level))
+		return 0;
 
-	mm_ops->free_unlinked_table(childp, ctx->level);
+	kvm_set_invalid_pte(ptep);
+
+	/*
+	 * Invalidate the whole stage-2, as we may have numerous leaf
+	 * entries below us which would otherwise need invalidating
+	 * individually.
+	 */
+	kvm_call_hyp(__kvm_tlb_flush_vmid, data->mmu);
+	data->anchor = ptep;
 	return 0;
 }
 
-static int stage2_map_walk_leaf(const struct kvm_pgtable_visit_ctx *ctx,
+static int stage2_map_walk_leaf(u64 addr, u64 end, u32 level, kvm_pte_t *ptep,
 				struct stage2_map_data *data)
 {
-	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
-	kvm_pte_t *childp, new;
-	int ret;
+	kvm_pte_t *childp, pte = *ptep;
+	struct page *page = virt_to_page(ptep);
 
-	ret = stage2_map_walker_try_leaf(ctx, data);
-	if (ret != -E2BIG)
-		return ret;
+	if (data->anchor) {
+		if (kvm_pte_valid(pte))
+			put_page(page);
 
-	if (WARN_ON(ctx->level == KVM_PGTABLE_MAX_LEVELS - 1))
+		return 0;
+	}
+
+	if (stage2_map_walker_try_leaf(addr, end, level, ptep, data))
+		goto out_get_page;
+
+	if (WARN_ON(level == KVM_PGTABLE_MAX_LEVELS - 1))
 		return -EINVAL;
 
 	if (!data->memcache)
 		return -ENOMEM;
 
-	childp = mm_ops->zalloc_page(data->memcache);
+	childp = kvm_mmu_memory_cache_alloc(data->memcache);
 	if (!childp)
 		return -ENOMEM;
-
-	if (!stage2_try_break_pte(ctx, data->mmu)) {
-		mm_ops->put_page(childp);
-		return -EAGAIN;
-	}
 
 	/*
 	 * If we've run into an existing block mapping then replace it with
 	 * a table. Accesses beyond 'end' that fall within the new table
 	 * will be mapped lazily.
 	 */
-	new = kvm_init_table_pte(childp, mm_ops);
-	stage2_make_pte(ctx, new);
+	if (kvm_pte_valid(pte)) {
+		kvm_set_invalid_pte(ptep);
+		kvm_call_hyp(__kvm_tlb_flush_vmid_ipa, data->mmu, addr, level);
+		put_page(page);
+	}
 
+	kvm_set_table_pte(ptep, childp);
+
+out_get_page:
+	get_page(page);
 	return 0;
 }
 
-/*
- * The TABLE_PRE callback runs for table entries on the way down, looking
- * for table entries which we could conceivably replace with a block entry
- * for this mapping. If it finds one it replaces the entry and calls
- * kvm_pgtable_mm_ops::free_unlinked_table() to tear down the detached table.
- *
- * Otherwise, the LEAF callback performs the mapping at the existing leaves
- * instead.
- */
-static int stage2_map_walker(const struct kvm_pgtable_visit_ctx *ctx,
-			     enum kvm_pgtable_walk_flags visit)
+static int stage2_map_walk_table_post(u64 addr, u64 end, u32 level,
+				      kvm_pte_t *ptep,
+				      struct stage2_map_data *data)
 {
-	struct stage2_map_data *data = ctx->arg;
+	int ret = 0;
 
-	switch (visit) {
-	case KVM_PGTABLE_WALK_TABLE_PRE:
-		return stage2_map_walk_table_pre(ctx, data);
-	case KVM_PGTABLE_WALK_LEAF:
-		return stage2_map_walk_leaf(ctx, data);
-	default:
-		return -EINVAL;
+	if (!data->anchor)
+		return 0;
+
+	free_page((unsigned long)kvm_pte_follow(*ptep));
+	put_page(virt_to_page(ptep));
+
+	if (data->anchor == ptep) {
+		data->anchor = NULL;
+		ret = stage2_map_walk_leaf(addr, end, level, ptep, data);
 	}
+
+	return ret;
+}
+
+/*
+ * This is a little fiddly, as we use all three of the walk flags. The idea
+ * is that the TABLE_PRE callback runs for table entries on the way down,
+ * looking for table entries which we could conceivably replace with a
+ * block entry for this mapping. If it finds one, then it sets the 'anchor'
+ * field in 'struct stage2_map_data' to point at the table entry, before
+ * clearing the entry to zero and descending into the now detached table.
+ *
+ * The behaviour of the LEAF callback then depends on whether or not the
+ * anchor has been set. If not, then we're not using a block mapping higher
+ * up the table and we perform the mapping at the existing leaves instead.
+ * If, on the other hand, the anchor _is_ set, then we drop references to
+ * all valid leaves so that the pages beneath the anchor can be freed.
+ *
+ * Finally, the TABLE_POST callback does nothing if the anchor has not
+ * been set, but otherwise frees the page-table pages while walking back up
+ * the page-table, installing the block entry when it revisits the anchor
+ * pointer and clearing the anchor to NULL.
+ */
+static int stage2_map_walker(u64 addr, u64 end, u32 level, kvm_pte_t *ptep,
+			     enum kvm_pgtable_walk_flags flag, void * const arg)
+{
+	struct stage2_map_data *data = arg;
+
+	switch (flag) {
+	case KVM_PGTABLE_WALK_TABLE_PRE:
+		return stage2_map_walk_table_pre(addr, end, level, ptep, data);
+	case KVM_PGTABLE_WALK_LEAF:
+		return stage2_map_walk_leaf(addr, end, level, ptep, data);
+	case KVM_PGTABLE_WALK_TABLE_POST:
+		return stage2_map_walk_table_post(addr, end, level, ptep, data);
+	}
+
+	return -EINVAL;
 }
 
 int kvm_pgtable_stage2_map(struct kvm_pgtable *pgt, u64 addr, u64 size,
 			   u64 phys, enum kvm_pgtable_prot prot,
-			   void *mc, enum kvm_pgtable_walk_flags flags)
+			   struct kvm_mmu_memory_cache *mc)
 {
 	int ret;
 	struct stage2_map_data map_data = {
 		.phys		= ALIGN_DOWN(phys, PAGE_SIZE),
 		.mmu		= pgt->mmu,
 		.memcache	= mc,
-		.force_pte	= pgt->force_pte_cb && pgt->force_pte_cb(addr, addr + size, prot),
 	};
 	struct kvm_pgtable_walker walker = {
 		.cb		= stage2_map_walker,
-		.flags		= flags |
-				  KVM_PGTABLE_WALK_TABLE_PRE |
-				  KVM_PGTABLE_WALK_LEAF,
+		.flags		= KVM_PGTABLE_WALK_TABLE_PRE |
+				  KVM_PGTABLE_WALK_LEAF |
+				  KVM_PGTABLE_WALK_TABLE_POST,
 		.arg		= &map_data,
 	};
 
-	if (WARN_ON((pgt->flags & KVM_PGTABLE_S2_IDMAP) && (addr != phys)))
-		return -EINVAL;
-
-	ret = stage2_set_prot_attr(pgt, prot, &map_data.attr);
+	ret = stage2_map_set_prot_attr(prot, &map_data);
 	if (ret)
 		return ret;
 
@@ -1021,55 +641,38 @@ int kvm_pgtable_stage2_map(struct kvm_pgtable *pgt, u64 addr, u64 size,
 	return ret;
 }
 
-int kvm_pgtable_stage2_set_owner(struct kvm_pgtable *pgt, u64 addr, u64 size,
-				 void *mc, u8 owner_id)
+static void stage2_flush_dcache(void *addr, u64 size)
 {
-	int ret;
-	struct stage2_map_data map_data = {
-		.phys		= KVM_PHYS_INVALID,
-		.mmu		= pgt->mmu,
-		.memcache	= mc,
-		.owner_id	= owner_id,
-		.force_pte	= true,
-	};
-	struct kvm_pgtable_walker walker = {
-		.cb		= stage2_map_walker,
-		.flags		= KVM_PGTABLE_WALK_TABLE_PRE |
-				  KVM_PGTABLE_WALK_LEAF,
-		.arg		= &map_data,
-	};
+	if (cpus_have_const_cap(ARM64_HAS_STAGE2_FWB))
+		return;
 
-	if (owner_id > KVM_MAX_OWNER_ID)
-		return -EINVAL;
-
-	ret = kvm_pgtable_walk(pgt, addr, size, &walker);
-	return ret;
+	__flush_dcache_area(addr, size);
 }
 
-static int stage2_unmap_walker(const struct kvm_pgtable_visit_ctx *ctx,
-			       enum kvm_pgtable_walk_flags visit)
+static bool stage2_pte_cacheable(kvm_pte_t pte)
 {
-	struct kvm_pgtable *pgt = ctx->arg;
-	struct kvm_s2_mmu *mmu = pgt->mmu;
-	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
-	kvm_pte_t *childp = NULL;
+	u64 memattr = pte & KVM_PTE_LEAF_ATTR_LO_S2_MEMATTR;
+	return memattr == PAGE_S2_MEMATTR(NORMAL);
+}
+
+static int stage2_unmap_walker(u64 addr, u64 end, u32 level, kvm_pte_t *ptep,
+			       enum kvm_pgtable_walk_flags flag,
+			       void * const arg)
+{
+	struct kvm_s2_mmu *mmu = arg;
+	kvm_pte_t pte = *ptep, *childp = NULL;
 	bool need_flush = false;
 
-	if (!kvm_pte_valid(ctx->old)) {
-		if (stage2_pte_is_counted(ctx->old)) {
-			kvm_clear_pte(ctx->ptep);
-			mm_ops->put_page(ctx->ptep);
-		}
+	if (!kvm_pte_valid(pte))
 		return 0;
-	}
 
-	if (kvm_pte_table(ctx->old, ctx->level)) {
-		childp = kvm_pte_follow(ctx->old, mm_ops);
+	if (kvm_pte_table(pte, level)) {
+		childp = kvm_pte_follow(pte);
 
-		if (mm_ops->page_count(childp) != 1)
+		if (page_count(virt_to_page(childp)) != 1)
 			return 0;
-	} else if (stage2_pte_cacheable(pgt, ctx->old)) {
-		need_flush = !stage2_has_fwb(pgt);
+	} else if (stage2_pte_cacheable(pte)) {
+		need_flush = true;
 	}
 
 	/*
@@ -1077,14 +680,17 @@ static int stage2_unmap_walker(const struct kvm_pgtable_visit_ctx *ctx,
 	 * block entry and rely on the remaining portions being faulted
 	 * back lazily.
 	 */
-	stage2_put_pte(ctx, mmu, mm_ops);
+	kvm_set_invalid_pte(ptep);
+	kvm_call_hyp(__kvm_tlb_flush_vmid_ipa, mmu, addr, level);
+	put_page(virt_to_page(ptep));
 
-	if (need_flush && mm_ops->dcache_clean_inval_poc)
-		mm_ops->dcache_clean_inval_poc(kvm_pte_follow(ctx->old, mm_ops),
-					       kvm_granule_size(ctx->level));
+	if (need_flush) {
+		stage2_flush_dcache(kvm_pte_follow(pte),
+				    kvm_granule_size(level));
+	}
 
 	if (childp)
-		mm_ops->put_page(childp);
+		free_page((unsigned long)childp);
 
 	return 0;
 }
@@ -1093,7 +699,7 @@ int kvm_pgtable_stage2_unmap(struct kvm_pgtable *pgt, u64 addr, u64 size)
 {
 	struct kvm_pgtable_walker walker = {
 		.cb	= stage2_unmap_walker,
-		.arg	= pgt,
+		.arg	= pgt->mmu,
 		.flags	= KVM_PGTABLE_WALK_LEAF | KVM_PGTABLE_WALK_TABLE_POST,
 	};
 
@@ -1101,23 +707,23 @@ int kvm_pgtable_stage2_unmap(struct kvm_pgtable *pgt, u64 addr, u64 size)
 }
 
 struct stage2_attr_data {
-	kvm_pte_t			attr_set;
-	kvm_pte_t			attr_clr;
-	kvm_pte_t			pte;
-	u32				level;
+	kvm_pte_t	attr_set;
+	kvm_pte_t	attr_clr;
+	kvm_pte_t	pte;
+	u32		level;
 };
 
-static int stage2_attr_walker(const struct kvm_pgtable_visit_ctx *ctx,
-			      enum kvm_pgtable_walk_flags visit)
+static int stage2_attr_walker(u64 addr, u64 end, u32 level, kvm_pte_t *ptep,
+			      enum kvm_pgtable_walk_flags flag,
+			      void * const arg)
 {
-	kvm_pte_t pte = ctx->old;
-	struct stage2_attr_data *data = ctx->arg;
-	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
+	kvm_pte_t pte = *ptep;
+	struct stage2_attr_data *data = arg;
 
-	if (!kvm_pte_valid(ctx->old))
-		return -EAGAIN;
+	if (!kvm_pte_valid(pte))
+		return 0;
 
-	data->level = ctx->level;
+	data->level = level;
 	data->pte = pte;
 	pte &= ~data->attr_clr;
 	pte |= data->attr_set;
@@ -1127,19 +733,8 @@ static int stage2_attr_walker(const struct kvm_pgtable_visit_ctx *ctx,
 	 * but worst-case the access flag update gets lost and will be
 	 * set on the next access instead.
 	 */
-	if (data->pte != pte) {
-		/*
-		 * Invalidate instruction cache before updating the guest
-		 * stage-2 PTE if we are going to add executable permission.
-		 */
-		if (mm_ops->icache_inval_pou &&
-		    stage2_pte_executable(pte) && !stage2_pte_executable(ctx->old))
-			mm_ops->icache_inval_pou(kvm_pte_follow(pte, mm_ops),
-						  kvm_granule_size(ctx->level));
-
-		if (!stage2_try_set_pte(ctx, pte))
-			return -EAGAIN;
-	}
+	if (data->pte != pte)
+		WRITE_ONCE(*ptep, pte);
 
 	return 0;
 }
@@ -1147,7 +742,7 @@ static int stage2_attr_walker(const struct kvm_pgtable_visit_ctx *ctx,
 static int stage2_update_leaf_attrs(struct kvm_pgtable *pgt, u64 addr,
 				    u64 size, kvm_pte_t attr_set,
 				    kvm_pte_t attr_clr, kvm_pte_t *orig_pte,
-				    u32 *level, enum kvm_pgtable_walk_flags flags)
+				    u32 *level)
 {
 	int ret;
 	kvm_pte_t attr_mask = KVM_PTE_LEAF_ATTR_LO | KVM_PTE_LEAF_ATTR_HI;
@@ -1158,7 +753,7 @@ static int stage2_update_leaf_attrs(struct kvm_pgtable *pgt, u64 addr,
 	struct kvm_pgtable_walker walker = {
 		.cb		= stage2_attr_walker,
 		.arg		= &data,
-		.flags		= flags | KVM_PGTABLE_WALK_LEAF,
+		.flags		= KVM_PGTABLE_WALK_LEAF,
 	};
 
 	ret = kvm_pgtable_walk(pgt, addr, size, &walker);
@@ -1177,21 +772,15 @@ int kvm_pgtable_stage2_wrprotect(struct kvm_pgtable *pgt, u64 addr, u64 size)
 {
 	return stage2_update_leaf_attrs(pgt, addr, size, 0,
 					KVM_PTE_LEAF_ATTR_LO_S2_S2AP_W,
-					NULL, NULL, 0);
+					NULL, NULL);
 }
 
 kvm_pte_t kvm_pgtable_stage2_mkyoung(struct kvm_pgtable *pgt, u64 addr)
 {
 	kvm_pte_t pte = 0;
-	int ret;
-
-	ret = stage2_update_leaf_attrs(pgt, addr, 1, KVM_PTE_LEAF_ATTR_LO_S2_AF, 0,
-				       &pte, NULL,
-				       KVM_PGTABLE_WALK_HANDLE_FAULT |
-				       KVM_PGTABLE_WALK_SHARED);
-	if (!ret)
-		dsb(ishst);
-
+	stage2_update_leaf_attrs(pgt, addr, 1, KVM_PTE_LEAF_ATTR_LO_S2_AF, 0,
+				 &pte, NULL);
+	dsb(ishst);
 	return pte;
 }
 
@@ -1199,7 +788,7 @@ kvm_pte_t kvm_pgtable_stage2_mkold(struct kvm_pgtable *pgt, u64 addr)
 {
 	kvm_pte_t pte = 0;
 	stage2_update_leaf_attrs(pgt, addr, 1, 0, KVM_PTE_LEAF_ATTR_LO_S2_AF,
-				 &pte, NULL, 0);
+				 &pte, NULL);
 	/*
 	 * "But where's the TLBI?!", you scream.
 	 * "Over in the core code", I sigh.
@@ -1212,7 +801,7 @@ kvm_pte_t kvm_pgtable_stage2_mkold(struct kvm_pgtable *pgt, u64 addr)
 bool kvm_pgtable_stage2_is_young(struct kvm_pgtable *pgt, u64 addr)
 {
 	kvm_pte_t pte = 0;
-	stage2_update_leaf_attrs(pgt, addr, 1, 0, 0, &pte, NULL, 0);
+	stage2_update_leaf_attrs(pgt, addr, 1, 0, 0, &pte, NULL);
 	return pte & KVM_PTE_LEAF_ATTR_LO_S2_AF;
 }
 
@@ -1223,9 +812,6 @@ int kvm_pgtable_stage2_relax_perms(struct kvm_pgtable *pgt, u64 addr,
 	u32 level;
 	kvm_pte_t set = 0, clr = 0;
 
-	if (prot & KVM_PTE_LEAF_ATTR_HI_SW)
-		return -EINVAL;
-
 	if (prot & KVM_PGTABLE_PROT_R)
 		set |= KVM_PTE_LEAF_ATTR_LO_S2_S2AP_R;
 
@@ -1235,26 +821,22 @@ int kvm_pgtable_stage2_relax_perms(struct kvm_pgtable *pgt, u64 addr,
 	if (prot & KVM_PGTABLE_PROT_X)
 		clr |= KVM_PTE_LEAF_ATTR_HI_S2_XN;
 
-	ret = stage2_update_leaf_attrs(pgt, addr, 1, set, clr, NULL, &level,
-				       KVM_PGTABLE_WALK_HANDLE_FAULT |
-				       KVM_PGTABLE_WALK_SHARED);
+	ret = stage2_update_leaf_attrs(pgt, addr, 1, set, clr, NULL, &level);
 	if (!ret)
-		kvm_call_hyp(__kvm_tlb_flush_vmid_ipa_nsh, pgt->mmu, addr, level);
+		kvm_call_hyp(__kvm_tlb_flush_vmid_ipa, pgt->mmu, addr, level);
 	return ret;
 }
 
-static int stage2_flush_walker(const struct kvm_pgtable_visit_ctx *ctx,
-			       enum kvm_pgtable_walk_flags visit)
+static int stage2_flush_walker(u64 addr, u64 end, u32 level, kvm_pte_t *ptep,
+			       enum kvm_pgtable_walk_flags flag,
+			       void * const arg)
 {
-	struct kvm_pgtable *pgt = ctx->arg;
-	struct kvm_pgtable_mm_ops *mm_ops = pgt->mm_ops;
+	kvm_pte_t pte = *ptep;
 
-	if (!kvm_pte_valid(ctx->old) || !stage2_pte_cacheable(pgt, ctx->old))
+	if (!kvm_pte_valid(pte) || !stage2_pte_cacheable(pte))
 		return 0;
 
-	if (mm_ops->dcache_clean_inval_poc)
-		mm_ops->dcache_clean_inval_poc(kvm_pte_follow(ctx->old, mm_ops),
-					       kvm_granule_size(ctx->level));
+	stage2_flush_dcache(kvm_pte_follow(pte), kvm_granule_size(level));
 	return 0;
 }
 
@@ -1263,221 +845,49 @@ int kvm_pgtable_stage2_flush(struct kvm_pgtable *pgt, u64 addr, u64 size)
 	struct kvm_pgtable_walker walker = {
 		.cb	= stage2_flush_walker,
 		.flags	= KVM_PGTABLE_WALK_LEAF,
-		.arg	= pgt,
 	};
 
-	if (stage2_has_fwb(pgt))
+	if (cpus_have_const_cap(ARM64_HAS_STAGE2_FWB))
 		return 0;
 
 	return kvm_pgtable_walk(pgt, addr, size, &walker);
 }
 
-kvm_pte_t *kvm_pgtable_stage2_create_unlinked(struct kvm_pgtable *pgt,
-					      u64 phys, u32 level,
-					      enum kvm_pgtable_prot prot,
-					      void *mc, bool force_pte)
-{
-	struct stage2_map_data map_data = {
-		.phys		= phys,
-		.mmu		= pgt->mmu,
-		.memcache	= mc,
-		.force_pte	= force_pte,
-	};
-	struct kvm_pgtable_walker walker = {
-		.cb		= stage2_map_walker,
-		.flags		= KVM_PGTABLE_WALK_LEAF |
-				  KVM_PGTABLE_WALK_SKIP_BBM_TLBI |
-				  KVM_PGTABLE_WALK_SKIP_CMO,
-		.arg		= &map_data,
-	};
-	/*
-	 * The input address (.addr) is irrelevant for walking an
-	 * unlinked table. Construct an ambiguous IA range to map
-	 * kvm_granule_size(level) worth of memory.
-	 */
-	struct kvm_pgtable_walk_data data = {
-		.walker	= &walker,
-		.addr	= 0,
-		.end	= kvm_granule_size(level),
-	};
-	struct kvm_pgtable_mm_ops *mm_ops = pgt->mm_ops;
-	kvm_pte_t *pgtable;
-	int ret;
-
-	if (!IS_ALIGNED(phys, kvm_granule_size(level)))
-		return ERR_PTR(-EINVAL);
-
-	ret = stage2_set_prot_attr(pgt, prot, &map_data.attr);
-	if (ret)
-		return ERR_PTR(ret);
-
-	pgtable = mm_ops->zalloc_page(mc);
-	if (!pgtable)
-		return ERR_PTR(-ENOMEM);
-
-	ret = __kvm_pgtable_walk(&data, mm_ops, (kvm_pteref_t)pgtable,
-				 level + 1);
-	if (ret) {
-		kvm_pgtable_stage2_free_unlinked(mm_ops, pgtable, level);
-		mm_ops->put_page(pgtable);
-		return ERR_PTR(ret);
-	}
-
-	return pgtable;
-}
-
-/*
- * Get the number of page-tables needed to replace a block with a
- * fully populated tree up to the PTE entries. Note that @level is
- * interpreted as in "level @level entry".
- */
-static int stage2_block_get_nr_page_tables(u32 level)
-{
-	switch (level) {
-	case 1:
-		return PTRS_PER_PTE + 1;
-	case 2:
-		return 1;
-	case 3:
-		return 0;
-	default:
-		WARN_ON_ONCE(level < KVM_PGTABLE_MIN_BLOCK_LEVEL ||
-			     level >= KVM_PGTABLE_MAX_LEVELS);
-		return -EINVAL;
-	};
-}
-
-static int stage2_split_walker(const struct kvm_pgtable_visit_ctx *ctx,
-			       enum kvm_pgtable_walk_flags visit)
-{
-	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
-	struct kvm_mmu_memory_cache *mc = ctx->arg;
-	struct kvm_s2_mmu *mmu;
-	kvm_pte_t pte = ctx->old, new, *childp;
-	enum kvm_pgtable_prot prot;
-	u32 level = ctx->level;
-	bool force_pte;
-	int nr_pages;
-	u64 phys;
-
-	/* No huge-pages exist at the last level */
-	if (level == KVM_PGTABLE_MAX_LEVELS - 1)
-		return 0;
-
-	/* We only split valid block mappings */
-	if (!kvm_pte_valid(pte))
-		return 0;
-
-	nr_pages = stage2_block_get_nr_page_tables(level);
-	if (nr_pages < 0)
-		return nr_pages;
-
-	if (mc->nobjs >= nr_pages) {
-		/* Build a tree mapped down to the PTE granularity. */
-		force_pte = true;
-	} else {
-		/*
-		 * Don't force PTEs, so create_unlinked() below does
-		 * not populate the tree up to the PTE level. The
-		 * consequence is that the call will require a single
-		 * page of level 2 entries at level 1, or a single
-		 * page of PTEs at level 2. If we are at level 1, the
-		 * PTEs will be created recursively.
-		 */
-		force_pte = false;
-		nr_pages = 1;
-	}
-
-	if (mc->nobjs < nr_pages)
-		return -ENOMEM;
-
-	mmu = container_of(mc, struct kvm_s2_mmu, split_page_cache);
-	phys = kvm_pte_to_phys(pte);
-	prot = kvm_pgtable_stage2_pte_prot(pte);
-
-	childp = kvm_pgtable_stage2_create_unlinked(mmu->pgt, phys,
-						    level, prot, mc, force_pte);
-	if (IS_ERR(childp))
-		return PTR_ERR(childp);
-
-	if (!stage2_try_break_pte(ctx, mmu)) {
-		kvm_pgtable_stage2_free_unlinked(mm_ops, childp, level);
-		mm_ops->put_page(childp);
-		return -EAGAIN;
-	}
-
-	/*
-	 * Note, the contents of the page table are guaranteed to be made
-	 * visible before the new PTE is assigned because stage2_make_pte()
-	 * writes the PTE using smp_store_release().
-	 */
-	new = kvm_init_table_pte(childp, mm_ops);
-	stage2_make_pte(ctx, new);
-	dsb(ishst);
-	return 0;
-}
-
-int kvm_pgtable_stage2_split(struct kvm_pgtable *pgt, u64 addr, u64 size,
-			     struct kvm_mmu_memory_cache *mc)
-{
-	struct kvm_pgtable_walker walker = {
-		.cb	= stage2_split_walker,
-		.flags	= KVM_PGTABLE_WALK_LEAF,
-		.arg	= mc,
-	};
-
-	return kvm_pgtable_walk(pgt, addr, size, &walker);
-}
-
-int __kvm_pgtable_stage2_init(struct kvm_pgtable *pgt, struct kvm_s2_mmu *mmu,
-			      struct kvm_pgtable_mm_ops *mm_ops,
-			      enum kvm_pgtable_stage2_flags flags,
-			      kvm_pgtable_force_pte_cb_t force_pte_cb)
+int kvm_pgtable_stage2_init(struct kvm_pgtable *pgt, struct kvm *kvm)
 {
 	size_t pgd_sz;
-	u64 vtcr = mmu->arch->vtcr;
+	u64 vtcr = kvm->arch.vtcr;
 	u32 ia_bits = VTCR_EL2_IPA(vtcr);
 	u32 sl0 = FIELD_GET(VTCR_EL2_SL0_MASK, vtcr);
 	u32 start_level = VTCR_EL2_TGRAN_SL0_BASE - sl0;
 
 	pgd_sz = kvm_pgd_pages(ia_bits, start_level) * PAGE_SIZE;
-	pgt->pgd = (kvm_pteref_t)mm_ops->zalloc_pages_exact(pgd_sz);
+	pgt->pgd = alloc_pages_exact(pgd_sz, GFP_KERNEL_ACCOUNT | __GFP_ZERO);
 	if (!pgt->pgd)
 		return -ENOMEM;
 
 	pgt->ia_bits		= ia_bits;
 	pgt->start_level	= start_level;
-	pgt->mm_ops		= mm_ops;
-	pgt->mmu		= mmu;
-	pgt->flags		= flags;
-	pgt->force_pte_cb	= force_pte_cb;
+	pgt->mmu		= &kvm->arch.mmu;
 
 	/* Ensure zeroed PGD pages are visible to the hardware walker */
 	dsb(ishst);
 	return 0;
 }
 
-size_t kvm_pgtable_stage2_pgd_size(u64 vtcr)
+static int stage2_free_walker(u64 addr, u64 end, u32 level, kvm_pte_t *ptep,
+			      enum kvm_pgtable_walk_flags flag,
+			      void * const arg)
 {
-	u32 ia_bits = VTCR_EL2_IPA(vtcr);
-	u32 sl0 = FIELD_GET(VTCR_EL2_SL0_MASK, vtcr);
-	u32 start_level = VTCR_EL2_TGRAN_SL0_BASE - sl0;
+	kvm_pte_t pte = *ptep;
 
-	return kvm_pgd_pages(ia_bits, start_level) * PAGE_SIZE;
-}
-
-static int stage2_free_walker(const struct kvm_pgtable_visit_ctx *ctx,
-			      enum kvm_pgtable_walk_flags visit)
-{
-	struct kvm_pgtable_mm_ops *mm_ops = ctx->mm_ops;
-
-	if (!stage2_pte_is_counted(ctx->old))
+	if (!kvm_pte_valid(pte))
 		return 0;
 
-	mm_ops->put_page(ctx->ptep);
+	put_page(virt_to_page(ptep));
 
-	if (kvm_pte_table(ctx->old, ctx->level))
-		mm_ops->put_page(kvm_pte_follow(ctx->old, mm_ops));
+	if (kvm_pte_table(pte, level))
+		free_page((unsigned long)kvm_pte_follow(pte));
 
 	return 0;
 }
@@ -1493,32 +903,6 @@ void kvm_pgtable_stage2_destroy(struct kvm_pgtable *pgt)
 
 	WARN_ON(kvm_pgtable_walk(pgt, 0, BIT(pgt->ia_bits), &walker));
 	pgd_sz = kvm_pgd_pages(pgt->ia_bits, pgt->start_level) * PAGE_SIZE;
-	pgt->mm_ops->free_pages_exact(kvm_dereference_pteref(&walker, pgt->pgd), pgd_sz);
+	free_pages_exact(pgt->pgd, pgd_sz);
 	pgt->pgd = NULL;
-}
-
-void kvm_pgtable_stage2_free_unlinked(struct kvm_pgtable_mm_ops *mm_ops, void *pgtable, u32 level)
-{
-	kvm_pteref_t ptep = (kvm_pteref_t)pgtable;
-	struct kvm_pgtable_walker walker = {
-		.cb	= stage2_free_walker,
-		.flags	= KVM_PGTABLE_WALK_LEAF |
-			  KVM_PGTABLE_WALK_TABLE_POST,
-	};
-	struct kvm_pgtable_walk_data data = {
-		.walker	= &walker,
-
-		/*
-		 * At this point the IPA really doesn't matter, as the page
-		 * table being traversed has already been removed from the stage
-		 * 2. Set an appropriate range to cover the entire page table.
-		 */
-		.addr	= 0,
-		.end	= kvm_granule_size(level),
-	};
-
-	WARN_ON(__kvm_pgtable_walk(&data, mm_ops, ptep, level + 1));
-
-	WARN_ON(mm_ops->page_count(pgtable) != 1);
-	mm_ops->put_page(pgtable);
 }

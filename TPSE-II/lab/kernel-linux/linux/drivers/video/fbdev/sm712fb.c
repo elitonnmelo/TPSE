@@ -18,7 +18,6 @@
  * Framebuffer driver for Silicon Motion SM710, SM712, SM721 and SM722 chips
  */
 
-#include <linux/aperture.h>
 #include <linux/io.h>
 #include <linux/fb.h>
 #include <linux/pci.h>
@@ -1028,8 +1027,11 @@ static ssize_t smtcfb_read(struct fb_info *info, char __user *buf,
 	int c, i, cnt = 0, err = 0;
 	unsigned long total_size;
 
-	if (!info->screen_base)
+	if (!info || !info->screen_base)
 		return -ENODEV;
+
+	if (info->state != FBINFO_STATE_RUNNING)
+		return -EPERM;
 
 	total_size = info->screen_size;
 
@@ -1091,8 +1093,11 @@ static ssize_t smtcfb_write(struct fb_info *info, const char __user *buf,
 	int c, i, cnt = 0, err = 0;
 	unsigned long total_size;
 
-	if (!info->screen_base)
+	if (!info || !info->screen_base)
 		return -ENODEV;
+
+	if (info->state != FBINFO_STATE_RUNNING)
+		return -EPERM;
 
 	total_size = info->screen_size;
 
@@ -1497,10 +1502,6 @@ static int smtcfb_pci_probe(struct pci_dev *pdev,
 
 	dev_info(&pdev->dev, "Silicon Motion display driver.\n");
 
-	err = aperture_remove_conflicting_pci_devices(pdev, "smtcfb");
-	if (err)
-		return err;
-
 	err = pci_enable_device(pdev);	/* enable SMTC chip */
 	if (err)
 		return err;
@@ -1749,9 +1750,6 @@ static struct pci_driver smtcfb_driver = {
 static int __init sm712fb_init(void)
 {
 	char *option = NULL;
-
-	if (fb_modesetting_disabled("sm712fb"))
-		return -ENODEV;
 
 	if (fb_get_options("sm712fb", &option))
 		return -ENODEV;

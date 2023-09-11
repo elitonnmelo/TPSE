@@ -45,7 +45,6 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/vmalloc.h>
@@ -53,17 +52,16 @@
 #include <linux/completion.h>
 #include <linux/fb.h>
 #include <linux/pci.h>
-#include <linux/panic_notifier.h>
 #include <linux/efi.h>
 #include <linux/console.h>
 
 #include <linux/hyperv.h>
 
+
 /* Hyper-V Synthetic Video Protocol definitions and structures */
 #define MAX_VMBUS_PKT_SIZE 0x4000
 
 #define SYNTHVID_VERSION(major, minor) ((minor) << 16 | (major))
-/* Support for VERSION_WIN7 is removed. #define is retained for reference. */
 #define SYNTHVID_VERSION_WIN7 SYNTHVID_VERSION(3, 0)
 #define SYNTHVID_VERSION_WIN8 SYNTHVID_VERSION(3, 2)
 #define SYNTHVID_VERSION_WIN10 SYNTHVID_VERSION(3, 5)
@@ -71,8 +69,18 @@
 #define SYNTHVID_VER_GET_MAJOR(ver) (ver & 0x0000ffff)
 #define SYNTHVID_VER_GET_MINOR(ver) ((ver & 0xffff0000) >> 16)
 
+#define SYNTHVID_DEPTH_WIN7 16
 #define SYNTHVID_DEPTH_WIN8 32
+
+#define SYNTHVID_FB_SIZE_WIN7 (4 * 1024 * 1024)
+#define SYNTHVID_WIDTH_MAX_WIN7 1600
+#define SYNTHVID_HEIGHT_MAX_WIN7 1200
+
 #define SYNTHVID_FB_SIZE_WIN8 (8 * 1024 * 1024)
+
+#define PCI_VENDOR_ID_MICROSOFT 0x1414
+#define PCI_DEVICE_ID_HYPERV_VIDEO 0x5353
+
 
 enum pipe_msg_type {
 	PIPE_MSG_INVALID,
@@ -298,7 +306,7 @@ static inline int synthvid_send(struct hv_device *hdev,
 			       VM_PKT_DATA_INBAND, 0);
 
 	if (ret)
-		pr_err_ratelimited("Unable to send packet via vmbus; error %d\n", ret);
+		pr_err("Unable to send packet via vmbus\n");
 
 	return ret;
 }
@@ -411,10 +419,11 @@ static void hvfb_docopy(struct hvfb_par *par,
 }
 
 /* Deferred IO callback */
-static void synthvid_deferred_io(struct fb_info *p, struct list_head *pagereflist)
+static void synthvid_deferred_io(struct fb_info *p,
+				 struct list_head *pagelist)
 {
 	struct hvfb_par *par = p->par;
-	struct fb_deferred_io_pageref *pageref;
+	struct page *page;
 	unsigned long start, end;
 	int y1, y2, miny, maxy;
 
@@ -427,8 +436,8 @@ static void synthvid_deferred_io(struct fb_info *p, struct list_head *pagereflis
 	 * in synthvid_update function by clamping the y2
 	 * value to yres.
 	 */
-	list_for_each_entry(pageref, pagereflist, list) {
-		start = pageref->offset;
+	list_for_each_entry(page, pagelist, lru) {
+		start = page->index << PAGE_SHIFT;
 		end = start + PAGE_SIZE - 1;
 		y1 = start / p->fix.line_length;
 		y2 = end / p->fix.line_length;
@@ -634,6 +643,12 @@ static int synthvid_connect_vsp(struct hv_device *hdev)
 	case VERSION_WIN8:
 	case VERSION_WIN8_1:
 		ret = synthvid_negotiate_ver(hdev, SYNTHVID_VERSION_WIN8);
+		if (!ret)
+			break;
+		fallthrough;
+	case VERSION_WS2008:
+	case VERSION_WIN7:
+		ret = synthvid_negotiate_ver(hdev, SYNTHVID_VERSION_WIN7);
 		break;
 	default:
 		ret = synthvid_negotiate_ver(hdev, SYNTHVID_VERSION_WIN10);
@@ -645,7 +660,11 @@ static int synthvid_connect_vsp(struct hv_device *hdev)
 		goto error;
 	}
 
-	screen_depth = SYNTHVID_DEPTH_WIN8;
+	if (par->synthvid_version == SYNTHVID_VERSION_WIN7)
+		screen_depth = SYNTHVID_DEPTH_WIN7;
+	else
+		screen_depth = SYNTHVID_DEPTH_WIN8;
+
 	if (synthvid_ver_ge(par->synthvid_version, SYNTHVID_VERSION_WIN10)) {
 		ret = synthvid_get_supported_resolution(hdev);
 		if (ret)
@@ -779,18 +798,12 @@ static void hvfb_ondemand_refresh_throttle(struct hvfb_par *par,
 static int hvfb_on_panic(struct notifier_block *nb,
 			 unsigned long e, void *p)
 {
-	struct hv_device *hdev;
 	struct hvfb_par *par;
 	struct fb_info *info;
 
 	par = container_of(nb, struct hvfb_par, hvfb_panic_nb);
-	info = par->info;
-	hdev = device_to_hv_device(info->device);
-
-	if (hv_ringbuffer_spinlock_busy(hdev->channel))
-		return NOTIFY_DONE;
-
 	par->synchronous_fb = true;
+	info = par->info;
 	if (par->need_docopy)
 		hvfb_docopy(par, 0, dio_fb_size);
 	synthvid_update(info, 0, 0, INT_MAX, INT_MAX);
@@ -895,7 +908,6 @@ static const struct fb_ops hvfb_ops = {
 	.fb_copyarea = hvfb_cfb_copyarea,
 	.fb_imageblit = hvfb_cfb_imageblit,
 	.fb_blank = hvfb_blank,
-	.fb_mmap = fb_deferred_io_mmap,
 };
 
 
@@ -920,7 +932,9 @@ static void hvfb_get_option(struct fb_info *info)
 	    (synthvid_ver_ge(par->synthvid_version, SYNTHVID_VERSION_WIN10) &&
 	    (x * y * screen_depth / 8 > screen_fb_size)) ||
 	    (par->synthvid_version == SYNTHVID_VERSION_WIN8 &&
-	     x * y * screen_depth / 8 > SYNTHVID_FB_SIZE_WIN8)) {
+	     x * y * screen_depth / 8 > SYNTHVID_FB_SIZE_WIN8) ||
+	    (par->synthvid_version == SYNTHVID_VERSION_WIN7 &&
+	     (x > SYNTHVID_WIDTH_MAX_WIN7 || y > SYNTHVID_HEIGHT_MAX_WIN7))) {
 		pr_err("Screen resolution option is out of range: skipped\n");
 		return;
 	}
@@ -946,7 +960,7 @@ static phys_addr_t hvfb_get_phymem(struct hv_device *hdev,
 	if (request_size == 0)
 		return -1;
 
-	if (order <= MAX_ORDER) {
+	if (order < MAX_ORDER) {
 		/* Call alloc_pages if the size is less than 2^MAX_ORDER */
 		page = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
 		if (!page)
@@ -977,7 +991,7 @@ static void hvfb_release_phymem(struct hv_device *hdev,
 {
 	unsigned int order = get_order(size);
 
-	if (order <= MAX_ORDER)
+	if (order < MAX_ORDER)
 		__free_pages(pfn_to_page(paddr >> PAGE_SHIFT), order);
 	else
 		dma_free_coherent(&hdev->device,
@@ -994,9 +1008,12 @@ static int hvfb_getmem(struct hv_device *hdev, struct fb_info *info)
 	struct pci_dev *pdev  = NULL;
 	void __iomem *fb_virt;
 	int gen2vm = efi_enabled(EFI_BOOT);
-	resource_size_t base, size;
 	phys_addr_t paddr;
 	int ret;
+
+	info->apertures = alloc_apertures(1);
+	if (!info->apertures)
+		return -ENOMEM;
 
 	if (!gen2vm) {
 		pdev = pci_get_device(PCI_VENDOR_ID_MICROSOFT,
@@ -1006,8 +1023,8 @@ static int hvfb_getmem(struct hv_device *hdev, struct fb_info *info)
 			return -ENODEV;
 		}
 
-		base = pci_resource_start(pdev, 0);
-		size = pci_resource_len(pdev, 0);
+		info->apertures->ranges[0].base = pci_resource_start(pdev, 0);
+		info->apertures->ranges[0].size = pci_resource_len(pdev, 0);
 
 		/*
 		 * For Gen 1 VM, we can directly use the contiguous memory
@@ -1030,8 +1047,8 @@ static int hvfb_getmem(struct hv_device *hdev, struct fb_info *info)
 		}
 		pr_info("Unable to allocate enough contiguous physical memory on Gen 1 VM. Using MMIO instead.\n");
 	} else {
-		base = screen_info.lfb_base;
-		size = screen_info.lfb_size;
+		info->apertures->ranges[0].base = screen_info.lfb_base;
+		info->apertures->ranges[0].size = screen_info.lfb_size;
 	}
 
 	/*
@@ -1073,7 +1090,8 @@ static int hvfb_getmem(struct hv_device *hdev, struct fb_info *info)
 	info->screen_size = dio_fb_size;
 
 getmem_done:
-	aperture_remove_conflicting_devices(base, size, KBUILD_MODNAME);
+	remove_conflicting_framebuffers(info->apertures,
+					KBUILD_MODNAME, false);
 
 	if (gen2vm) {
 		/* framebuffer is reallocated, clear screen_info to avoid misuse from kexec */
@@ -1208,15 +1226,7 @@ static int hvfb_probe(struct hv_device *hdev,
 	par->fb_ready = true;
 
 	par->synchronous_fb = false;
-
-	/*
-	 * We need to be sure this panic notifier runs _before_ the
-	 * vmbus disconnect, so order it by priority. It must execute
-	 * before the function hv_panic_vmbus_unload() [drivers/hv/vmbus_drv.c],
-	 * which is almost at the end of list, with priority = INT_MIN + 1.
-	 */
 	par->hvfb_panic_nb.notifier_call = hvfb_on_panic;
-	par->hvfb_panic_nb.priority = INT_MIN + 10,
 	atomic_notifier_chain_register(&panic_notifier_list,
 				       &par->hvfb_panic_nb);
 
@@ -1234,7 +1244,8 @@ error1:
 	return ret;
 }
 
-static void hvfb_remove(struct hv_device *hdev)
+
+static int hvfb_remove(struct hv_device *hdev)
 {
 	struct fb_info *info = hv_get_drvdata(hdev);
 	struct hvfb_par *par = info->par;
@@ -1255,6 +1266,8 @@ static void hvfb_remove(struct hv_device *hdev)
 
 	hvfb_putmem(hdev, info);
 	framebuffer_release(info);
+
+	return 0;
 }
 
 static int hvfb_suspend(struct hv_device *hdev)
@@ -1367,9 +1380,6 @@ static struct pci_driver hvfb_pci_stub_driver = {
 static int __init hvfb_drv_init(void)
 {
 	int ret;
-
-	if (fb_modesetting_disabled("hyper_fb"))
-		return -ENODEV;
 
 	ret = vmbus_driver_register(&hvfb_drv);
 	if (ret != 0)

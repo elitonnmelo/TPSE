@@ -2,7 +2,7 @@
 /*
  * TI K3 DSP Remote Processor(s) driver
  *
- * Copyright (C) 2018-2022 Texas Instruments Incorporated - https://www.ti.com/
+ * Copyright (C) 2018-2020 Texas Instruments Incorporated - https://www.ti.com/
  *	Suman Anna <s-anna@ti.com>
  */
 
@@ -76,6 +76,7 @@ struct k3_dsp_dev_data {
  * @ti_sci_id: TI-SCI device identifier
  * @mbox: mailbox channel handle
  * @client: mailbox client to request the mailbox channel
+ * @ipc_only: flag to indicate IPC-only mode
  */
 struct k3_dsp_rproc {
 	struct device *dev;
@@ -91,6 +92,7 @@ struct k3_dsp_rproc {
 	u32 ti_sci_id;
 	struct mbox_chan *mbox;
 	struct mbox_client client;
+	bool ipc_only;
 };
 
 /**
@@ -260,14 +262,17 @@ static int k3_dsp_rproc_request_mbox(struct rproc *rproc)
  * used to release the global reset on C66x DSPs to allow loading into the DSP
  * internal RAMs. The .prepare() ops is invoked by remoteproc core before any
  * firmware loading, and is followed by the .start() ops after loading to
- * actually let the C66x DSP cores run. This callback is invoked only in
- * remoteproc mode.
+ * actually let the C66x DSP cores run.
  */
 static int k3_dsp_rproc_prepare(struct rproc *rproc)
 {
 	struct k3_dsp_rproc *kproc = rproc->priv;
 	struct device *dev = kproc->dev;
 	int ret;
+
+	/* IPC-only mode does not require the core to be released from reset */
+	if (kproc->ipc_only)
+		return 0;
 
 	ret = kproc->ti_sci->ops.dev_ops.get_device(kproc->ti_sci,
 						    kproc->ti_sci_id);
@@ -285,13 +290,17 @@ static int k3_dsp_rproc_prepare(struct rproc *rproc)
  * powering down the C66x DSP cores. The cores themselves are only halted in the
  * .stop() callback through the local reset, and the .unprepare() ops is invoked
  * by the remoteproc core after the remoteproc is stopped to balance the global
- * reset. This callback is invoked only in remoteproc mode.
+ * reset.
  */
 static int k3_dsp_rproc_unprepare(struct rproc *rproc)
 {
 	struct k3_dsp_rproc *kproc = rproc->priv;
 	struct device *dev = kproc->dev;
 	int ret;
+
+	/* do not put back the cores into reset in IPC-only mode */
+	if (kproc->ipc_only)
+		return 0;
 
 	ret = kproc->ti_sci->ops.dev_ops.put_device(kproc->ti_sci,
 						    kproc->ti_sci_id);
@@ -306,7 +315,7 @@ static int k3_dsp_rproc_unprepare(struct rproc *rproc)
  *
  * This function will be invoked only after the firmware for this rproc
  * was loaded, parsed successfully, and all of its resource requirements
- * were met. This callback is invoked only in remoteproc mode.
+ * were met.
  */
 static int k3_dsp_rproc_start(struct rproc *rproc)
 {
@@ -314,6 +323,12 @@ static int k3_dsp_rproc_start(struct rproc *rproc)
 	struct device *dev = kproc->dev;
 	u32 boot_addr;
 	int ret;
+
+	if (kproc->ipc_only) {
+		dev_err(dev, "%s cannot be invoked in IPC-only mode\n",
+			__func__);
+		return -EINVAL;
+	}
 
 	ret = k3_dsp_rproc_request_mbox(rproc);
 	if (ret)
@@ -347,11 +362,18 @@ put_mbox:
  * Stop the DSP remote processor.
  *
  * This function puts the DSP processor into reset, and finishes processing
- * of any pending messages. This callback is invoked only in remoteproc mode.
+ * of any pending messages.
  */
 static int k3_dsp_rproc_stop(struct rproc *rproc)
 {
 	struct k3_dsp_rproc *kproc = rproc->priv;
+	struct device *dev = kproc->dev;
+
+	if (kproc->ipc_only) {
+		dev_err(dev, "%s cannot be invoked in IPC-only mode\n",
+			__func__);
+		return -EINVAL;
+	}
 
 	mbox_free_channel(kproc->mbox);
 
@@ -365,8 +387,7 @@ static int k3_dsp_rproc_stop(struct rproc *rproc)
  *
  * This rproc attach callback only needs to request the mailbox, the remote
  * processor is already booted, so there is no need to issue any TI-SCI
- * commands to boot the DSP core. This callback is invoked only in IPC-only
- * mode.
+ * commands to boot the DSP core.
  */
 static int k3_dsp_rproc_attach(struct rproc *rproc)
 {
@@ -374,11 +395,16 @@ static int k3_dsp_rproc_attach(struct rproc *rproc)
 	struct device *dev = kproc->dev;
 	int ret;
 
+	if (!kproc->ipc_only || rproc->state != RPROC_DETACHED) {
+		dev_err(dev, "DSP is expected to be in IPC-only mode and RPROC_DETACHED state\n");
+		return -EINVAL;
+	}
+
 	ret = k3_dsp_rproc_request_mbox(rproc);
 	if (ret)
 		return ret;
 
-	dev_info(dev, "DSP initialized in IPC-only mode\n");
+	dev_err(dev, "DSP initialized in IPC-only mode\n");
 	return 0;
 }
 
@@ -387,16 +413,20 @@ static int k3_dsp_rproc_attach(struct rproc *rproc)
  *
  * This rproc detach callback performs the opposite operation to attach callback
  * and only needs to release the mailbox, the DSP core is not stopped and will
- * be left to continue to run its booted firmware. This callback is invoked only
- * in IPC-only mode.
+ * be left to continue to run its booted firmware.
  */
 static int k3_dsp_rproc_detach(struct rproc *rproc)
 {
 	struct k3_dsp_rproc *kproc = rproc->priv;
 	struct device *dev = kproc->dev;
 
+	if (!kproc->ipc_only || rproc->state != RPROC_ATTACHED) {
+		dev_err(dev, "DSP is expected to be in IPC-only mode and RPROC_ATTACHED state\n");
+		return -EINVAL;
+	}
+
 	mbox_free_channel(kproc->mbox);
-	dev_info(dev, "DSP deinitialized in IPC-only mode\n");
+	dev_err(dev, "DSP deinitialized in IPC-only mode\n");
 	return 0;
 }
 
@@ -407,8 +437,7 @@ static int k3_dsp_rproc_detach(struct rproc *rproc)
  * resource table at the base of the DDR region reserved for firmware usage.
  * This provides flexibility for the remote processor to be booted by different
  * bootloaders that may or may not have the ability to publish the resource table
- * address and size through a DT property. This callback is invoked only in
- * IPC-only mode.
+ * address and size through a DT property.
  */
 static struct resource_table *k3_dsp_get_loaded_rsc_table(struct rproc *rproc,
 							  size_t *rsc_table_sz)
@@ -440,7 +469,7 @@ static struct resource_table *k3_dsp_get_loaded_rsc_table(struct rproc *rproc,
  * can be used either by the remoteproc core for loading (when using kernel
  * remoteproc loader), or by any rpmsg bus drivers.
  */
-static void *k3_dsp_rproc_da_to_va(struct rproc *rproc, u64 da, size_t len, bool *is_iomem)
+static void *k3_dsp_rproc_da_to_va(struct rproc *rproc, u64 da, size_t len)
 {
 	struct k3_dsp_rproc *kproc = rproc->priv;
 	void __iomem *va = NULL;
@@ -494,8 +523,11 @@ static void *k3_dsp_rproc_da_to_va(struct rproc *rproc, u64 da, size_t len, bool
 static const struct rproc_ops k3_dsp_rproc_ops = {
 	.start		= k3_dsp_rproc_start,
 	.stop		= k3_dsp_rproc_stop,
+	.attach		= k3_dsp_rproc_attach,
+	.detach		= k3_dsp_rproc_detach,
 	.kick		= k3_dsp_rproc_kick,
 	.da_to_va	= k3_dsp_rproc_da_to_va,
+	.get_loaded_rsc_table = k3_dsp_get_loaded_rsc_table,
 };
 
 static int k3_dsp_rproc_of_get_memories(struct platform_device *pdev,
@@ -567,7 +599,7 @@ static int k3_dsp_reserved_mem_init(struct k3_dsp_rproc *kproc)
 		return -EINVAL;
 	}
 	if (num_rmems < 2) {
-		dev_err(dev, "device needs at least two memory regions to be defined, num = %d\n",
+		dev_err(dev, "device needs atleast two memory regions to be defined, num = %d\n",
 			num_rmems);
 		return -EINVAL;
 	}
@@ -678,6 +710,7 @@ static int k3_dsp_rproc_probe(struct platform_device *pdev)
 	struct k3_dsp_rproc *kproc;
 	struct rproc *rproc;
 	const char *fw_name;
+	bool r_state = false;
 	bool p_state = false;
 	int ret = 0;
 	int ret1;
@@ -758,7 +791,7 @@ static int k3_dsp_rproc_probe(struct platform_device *pdev)
 	}
 
 	ret = kproc->ti_sci->ops.dev_ops.is_on(kproc->ti_sci, kproc->ti_sci_id,
-					       NULL, &p_state);
+					       &r_state, &p_state);
 	if (ret) {
 		dev_err(dev, "failed to get initial state, mode cannot be determined, ret = %d\n",
 			ret);
@@ -767,18 +800,12 @@ static int k3_dsp_rproc_probe(struct platform_device *pdev)
 
 	/* configure J721E devices for either remoteproc or IPC-only mode */
 	if (p_state) {
-		dev_info(dev, "configured DSP for IPC-only mode\n");
+		dev_err(dev, "configured DSP for IPC-only mode\n");
 		rproc->state = RPROC_DETACHED;
-		/* override rproc ops with only required IPC-only mode ops */
-		rproc->ops->prepare = NULL;
-		rproc->ops->unprepare = NULL;
-		rproc->ops->start = NULL;
-		rproc->ops->stop = NULL;
-		rproc->ops->attach = k3_dsp_rproc_attach;
-		rproc->ops->detach = k3_dsp_rproc_detach;
-		rproc->ops->get_loaded_rsc_table = k3_dsp_get_loaded_rsc_table;
+		rproc->detach_on_shutdown = true;
+		kproc->ipc_only = true;
 	} else {
-		dev_info(dev, "configured DSP for remoteproc mode\n");
+		dev_err(dev, "configured DSP for remoteproc mode\n");
 		/*
 		 * ensure the DSP local reset is asserted to ensure the DSP
 		 * doesn't execute bogus code in .prepare() when the module
@@ -828,17 +855,8 @@ free_rproc:
 static int k3_dsp_rproc_remove(struct platform_device *pdev)
 {
 	struct k3_dsp_rproc *kproc = platform_get_drvdata(pdev);
-	struct rproc *rproc = kproc->rproc;
 	struct device *dev = &pdev->dev;
 	int ret;
-
-	if (rproc->state == RPROC_ATTACHED) {
-		ret = rproc_detach(rproc);
-		if (ret) {
-			dev_err(dev, "failed to detach proc, ret = %d\n", ret);
-			return ret;
-		}
-	}
 
 	rproc_del(kproc->rproc);
 

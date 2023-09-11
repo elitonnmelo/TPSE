@@ -10,7 +10,6 @@
 #include <linux/seq_file.h>
 #include <linux/debugfs.h>
 #include <linux/regmap.h>
-#include <linux/module.h>
 
 static DEFINE_MUTEX(measure_lock);
 
@@ -606,6 +605,7 @@ static int meson_msr_probe(struct platform_device *pdev)
 {
 	const struct meson_msr_id *match_data;
 	struct meson_msr *priv;
+	struct resource *res;
 	struct dentry *root, *clks;
 	void __iomem *base;
 	int i;
@@ -623,9 +623,12 @@ static int meson_msr_probe(struct platform_device *pdev)
 
 	memcpy(priv->msr_table, match_data, sizeof(priv->msr_table));
 
-	base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(base))
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	base = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(base)) {
+		dev_err(&pdev->dev, "io resource mapping failed\n");
 		return PTR_ERR(base);
+	}
 
 	priv->regmap = devm_regmap_init_mmio(&pdev->dev, base,
 					     &meson_clk_msr_regmap_config);
@@ -678,7 +681,6 @@ static const struct of_device_id meson_msr_match_table[] = {
 	},
 	{ /* sentinel */ }
 };
-MODULE_DEVICE_TABLE(of, meson_msr_match_table);
 
 static struct platform_driver meson_msr_driver = {
 	.probe	= meson_msr_probe,
@@ -687,5 +689,4 @@ static struct platform_driver meson_msr_driver = {
 		.of_match_table	= meson_msr_match_table,
 	},
 };
-module_platform_driver(meson_msr_driver);
-MODULE_LICENSE("GPL v2");
+builtin_platform_driver(meson_msr_driver);

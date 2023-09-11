@@ -502,6 +502,9 @@ struct brcmf_fws_info {
 	bool creditmap_received;
 	u8 mode;
 	bool avoid_queueing;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 16, 0))
+	int fifo_init_credit[BRCMF_FWS_FIFO_COUNT];
+#endif
 };
 
 #define BRCMF_FWS_TLV_DEF(name, id, len) \
@@ -621,7 +624,6 @@ static inline int brcmf_fws_hanger_poppkt(struct brcmf_fws_hanger *h,
 static void brcmf_fws_psq_flush(struct brcmf_fws_info *fws, struct pktq *q,
 				int ifidx)
 {
-	struct brcmf_fws_hanger_item *hi;
 	bool (*matchfn)(struct sk_buff *, void *) = NULL;
 	struct sk_buff *skb;
 	int prec;
@@ -633,9 +635,6 @@ static void brcmf_fws_psq_flush(struct brcmf_fws_info *fws, struct pktq *q,
 		skb = brcmu_pktq_pdeq_match(q, prec, matchfn, &ifidx);
 		while (skb) {
 			hslot = brcmf_skb_htod_tag_get_field(skb, HSLOT);
-			hi = &fws->hanger.items[hslot];
-			WARN_ON(skb != hi->pkt);
-			hi->state = BRCMF_FWS_HANGER_ITEM_STATE_FREE;
 			brcmf_fws_hanger_poppkt(&fws->hanger, hslot, &skb,
 						true);
 			brcmu_pkt_buf_free_skb(skb);
@@ -688,7 +687,7 @@ static void brcmf_fws_macdesc_set_name(struct brcmf_fws_info *fws,
 				       struct brcmf_fws_mac_descriptor *desc)
 {
 	if (desc == &fws->desc.other)
-		strscpy(desc->name, "MAC-OTHER", sizeof(desc->name));
+		strlcpy(desc->name, "MAC-OTHER", sizeof(desc->name));
 	else if (desc->mac_handle)
 		scnprintf(desc->name, sizeof(desc->name), "MAC-%d:%d",
 			  desc->mac_handle, desc->interface_id);
@@ -746,7 +745,7 @@ brcmf_fws_macdesc_lookup(struct brcmf_fws_info *fws, u8 *ea)
 static struct brcmf_fws_mac_descriptor*
 brcmf_fws_macdesc_find(struct brcmf_fws_info *fws, struct brcmf_if *ifp, u8 *da)
 {
-	struct brcmf_fws_mac_descriptor *entry;
+	struct brcmf_fws_mac_descriptor *entry = &fws->desc.other;
 	bool multicast;
 
 	multicast = is_multicast_ether_addr(da);
@@ -1617,9 +1616,13 @@ static int brcmf_fws_notify_credit_map(struct brcmf_if *ifp,
 			fws->fifo_credit_map |= 1 << i;
 		else
 			fws->fifo_credit_map &= ~(1 << i);
+
 		WARN_ONCE(fws->fifo_credit[i] < 0,
 			  "fifo_credit[%d] is negative(%d)\n", i,
 			  fws->fifo_credit[i]);
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 16, 0))
+		fws->fifo_init_credit[i] = fws->fifo_credit[i];
+#endif
 	}
 	brcmf_fws_schedule_deq(fws);
 	brcmf_fws_unlock(fws);
@@ -1664,7 +1667,7 @@ static void brcmf_rxreorder_get_skb_list(struct brcmf_ampdu_rx_reorder *rfi,
 	rfi->pend_pkts -= skb_queue_len(skb_list);
 }
 
-void brcmf_fws_rxreorder(struct brcmf_if *ifp, struct sk_buff *pkt)
+void brcmf_fws_rxreorder(struct brcmf_if *ifp, struct sk_buff *pkt, bool inirq)
 {
 	struct brcmf_pub *drvr = ifp->drvr;
 	u8 *reorder_data;
@@ -1682,7 +1685,7 @@ void brcmf_fws_rxreorder(struct brcmf_if *ifp, struct sk_buff *pkt)
 	/* validate flags and flow id */
 	if (flags == 0xFF) {
 		bphy_err(drvr, "invalid flags...so ignore this packet\n");
-		brcmf_netif_rx(ifp, pkt);
+		brcmf_netif_rx(ifp, pkt, inirq);
 		return;
 	}
 
@@ -1694,7 +1697,7 @@ void brcmf_fws_rxreorder(struct brcmf_if *ifp, struct sk_buff *pkt)
 		if (rfi == NULL) {
 			brcmf_dbg(INFO, "received flags to cleanup, but no flow (%d) yet\n",
 				  flow_id);
-			brcmf_netif_rx(ifp, pkt);
+			brcmf_netif_rx(ifp, pkt, inirq);
 			return;
 		}
 
@@ -1719,7 +1722,7 @@ void brcmf_fws_rxreorder(struct brcmf_if *ifp, struct sk_buff *pkt)
 		rfi = kzalloc(buf_size, GFP_ATOMIC);
 		if (rfi == NULL) {
 			bphy_err(drvr, "failed to alloc buffer\n");
-			brcmf_netif_rx(ifp, pkt);
+			brcmf_netif_rx(ifp, pkt, inirq);
 			return;
 		}
 
@@ -1833,7 +1836,7 @@ void brcmf_fws_rxreorder(struct brcmf_if *ifp, struct sk_buff *pkt)
 netif_rx:
 	skb_queue_walk_safe(&reorder_list, pkt, pnext) {
 		__skb_unlink(pkt, &reorder_list);
-		brcmf_netif_rx(ifp, pkt);
+		brcmf_netif_rx(ifp, pkt, inirq);
 	}
 }
 
@@ -2197,6 +2200,38 @@ void brcmf_fws_del_interface(struct brcmf_if *ifp)
 	brcmf_fws_unlock(fws);
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 16, 0))
+static bool brcmf_fws_ismultistream(struct brcmf_fws_info *fws)
+{
+	bool ret = false;
+	u8 credit_usage = 0;
+
+	/* Check only for BE, VI and VO traffic */
+	u32 delay_map = fws->fifo_delay_map &
+		((1 << BRCMF_FWS_FIFO_AC_BE) |
+		 (1 << BRCMF_FWS_FIFO_AC_VI) |
+		 (1 << BRCMF_FWS_FIFO_AC_VO));
+
+	if (hweight_long(delay_map) > 1) {
+		ret = true;
+	} else {
+		if (fws->fifo_credit[BRCMF_FWS_FIFO_AC_BE] <
+			fws->fifo_init_credit[BRCMF_FWS_FIFO_AC_BE])
+			credit_usage++;
+		if (fws->fifo_credit[BRCMF_FWS_FIFO_AC_VI] <
+			fws->fifo_init_credit[BRCMF_FWS_FIFO_AC_VI])
+			credit_usage++;
+		if (fws->fifo_credit[BRCMF_FWS_FIFO_AC_VO] <
+			fws->fifo_init_credit[BRCMF_FWS_FIFO_AC_VO])
+			credit_usage++;
+
+		if (credit_usage > 1)
+			ret = true;
+	}
+	return ret;
+}
+#endif
+
 static void brcmf_fws_dequeue_worker(struct work_struct *worker)
 {
 	struct brcmf_fws_info *fws;
@@ -2209,6 +2244,13 @@ static void brcmf_fws_dequeue_worker(struct work_struct *worker)
 
 	fws = container_of(worker, struct brcmf_fws_info, fws_dequeue_work);
 	drvr = fws->drvr;
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 16, 0))
+	if (brcmf_fws_ismultistream(fws))
+		drvr->bus_if->allow_skborphan = false;
+	else
+		drvr->bus_if->allow_skborphan = true;
+#endif
 
 	brcmf_fws_lock(fws);
 	for (fifo = BRCMF_FWS_FIFO_BCMC; fifo >= 0 && !fws->bus_flow_blocked;
@@ -2484,12 +2526,11 @@ void brcmf_fws_bustxcomplete(struct brcmf_fws_info *fws, struct sk_buff *skb,
 		brcmu_pkt_buf_free_skb(skb);
 		return;
 	}
-
 	if (!success) {
 		brcmf_fws_lock(fws);
 		hslot = brcmf_skb_htod_tag_get_field(skb, HSLOT);
-		brcmf_fws_txs_process(fws, BRCMF_FWS_TXSTATUS_HOST_TOSSED, hslot,
-				      0, 0, 1);
+		brcmf_fws_txs_process(fws, BRCMF_FWS_TXSTATUS_HOST_TOSSED,
+				      hslot, 0, 0, 1);
 		brcmf_fws_unlock(fws);
 	}
 }

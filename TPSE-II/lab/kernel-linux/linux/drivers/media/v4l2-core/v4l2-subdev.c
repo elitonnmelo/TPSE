@@ -8,43 +8,21 @@
  *	    Sakari Ailus <sakari.ailus@iki.fi>
  */
 
-#include <linux/export.h>
 #include <linux/ioctl.h>
-#include <linux/leds.h>
 #include <linux/mm.h>
 #include <linux/module.h>
-#include <linux/overflow.h>
 #include <linux/slab.h>
 #include <linux/types.h>
-#include <linux/version.h>
 #include <linux/videodev2.h>
+#include <linux/export.h>
+#include <linux/version.h>
+#include <linux/sort.h>
 
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
-#include <media/v4l2-event.h>
-#include <media/v4l2-fh.h>
 #include <media/v4l2-ioctl.h>
-
-#if defined(CONFIG_VIDEO_V4L2_SUBDEV_API)
-/*
- * The Streams API is an experimental feature. To use the Streams API, set
- * 'v4l2_subdev_enable_streams_api' to 1 below.
- */
-
-static bool v4l2_subdev_enable_streams_api;
-#endif
-
-/*
- * Maximum stream ID is 63 for now, as we use u64 bitmask to represent a set
- * of streams.
- *
- * Note that V4L2_FRAME_DESC_ENTRY_MAX is related: V4L2_FRAME_DESC_ENTRY_MAX
- * restricts the total number of streams in a pad, although the stream ID is
- * not restricted.
- */
-#define V4L2_SUBDEV_MAX_STREAM_ID 63
-
-#include "v4l2-subdev-priv.h"
+#include <media/v4l2-fh.h>
+#include <media/v4l2-event.h>
 
 #if defined(CONFIG_VIDEO_V4L2_SUBDEV_API)
 static int subdev_fh_init(struct v4l2_subdev_fh *fh, struct v4l2_subdev *sd)
@@ -87,7 +65,7 @@ static int subdev_open(struct file *file)
 	v4l2_fh_init(&subdev_fh->vfh, vdev);
 	v4l2_fh_add(&subdev_fh->vfh);
 	file->private_data = &subdev_fh->vfh;
-
+#if defined(CONFIG_MEDIA_CONTROLLER)
 	if (sd->v4l2_dev->mdev && sd->entity.graph_obj.mdev->dev) {
 		struct module *owner;
 
@@ -98,6 +76,7 @@ static int subdev_open(struct file *file)
 		}
 		subdev_fh->owner = owner;
 	}
+#endif
 
 	if (sd->internal_ops && sd->internal_ops->open) {
 		ret = sd->internal_ops->open(sd, subdev_fh);
@@ -171,23 +150,40 @@ static inline int check_pad(struct v4l2_subdev *sd, u32 pad)
 	return 0;
 }
 
-static int check_state(struct v4l2_subdev *sd, struct v4l2_subdev_state *state,
-		       u32 which, u32 pad, u32 stream)
+static int check_state_pads(struct v4l2_subdev *sd, u32 which,
+			    struct v4l2_subdev_state *state)
 {
-	if (sd->flags & V4L2_SUBDEV_FL_STREAMS) {
-#if defined(CONFIG_VIDEO_V4L2_SUBDEV_API)
-		if (!v4l2_subdev_state_get_stream_format(state, pad, stream))
-			return -EINVAL;
+	if (sd->flags & V4L2_SUBDEV_FL_MULTIPLEXED)
 		return 0;
-#else
-		return -EINVAL;
-#endif
-	}
-
-	if (stream != 0)
-		return -EINVAL;
 
 	if (which == V4L2_SUBDEV_FORMAT_TRY && (!state || !state->pads))
+		return -EINVAL;
+
+	return 0;
+}
+
+static int check_state_pad_stream(struct v4l2_subdev *sd,
+				  struct v4l2_subdev_state *state, u32 pad,
+				  u32 stream)
+{
+	struct v4l2_mbus_framefmt *fmt;
+
+	if (!(sd->flags & V4L2_SUBDEV_FL_MULTIPLEXED))
+		return 0;
+
+	/*
+	 * We need to take the state lock to access the format, but as we then
+	 * have to unlock, nothing prevents someone changing the state before
+	 * this call thread enters the driver's op and the driver has the
+	 * change to lock the state.
+	 */
+	v4l2_subdev_lock_state(state);
+
+	fmt = v4l2_state_get_stream_format(state, pad, stream);
+
+	v4l2_subdev_unlock_state(state);
+
+	if (!fmt)
 		return -EINVAL;
 
 	return 0;
@@ -200,11 +196,9 @@ static inline int check_format(struct v4l2_subdev *sd,
 	if (!format)
 		return -EINVAL;
 
-	if (!(sd->flags & V4L2_SUBDEV_FL_STREAMS))
-		format->stream = 0;
-
 	return check_which(format->which) ? : check_pad(sd, format->pad) ? :
-	       check_state(sd, state, format->which, format->pad, format->stream);
+	       check_state_pads(sd, format->which, state) ? :
+	       check_state_pad_stream(sd, state, format->pad, format->stream);
 }
 
 static int call_get_fmt(struct v4l2_subdev *sd,
@@ -230,11 +224,9 @@ static int call_enum_mbus_code(struct v4l2_subdev *sd,
 	if (!code)
 		return -EINVAL;
 
-	if (!(sd->flags & V4L2_SUBDEV_FL_STREAMS))
-		code->stream = 0;
-
 	return check_which(code->which) ? : check_pad(sd, code->pad) ? :
-	       check_state(sd, state, code->which, code->pad, code->stream) ? :
+	       check_state_pads(sd, code->which, state) ? :
+	       check_state_pad_stream(sd, state, code->pad, code->stream) ? :
 	       sd->ops->pad->enum_mbus_code(sd, state, code);
 }
 
@@ -245,11 +237,9 @@ static int call_enum_frame_size(struct v4l2_subdev *sd,
 	if (!fse)
 		return -EINVAL;
 
-	if (!(sd->flags & V4L2_SUBDEV_FL_STREAMS))
-		fse->stream = 0;
-
 	return check_which(fse->which) ? : check_pad(sd, fse->pad) ? :
-	       check_state(sd, state, fse->which, fse->pad, fse->stream) ? :
+	       check_state_pads(sd, fse->which, state) ? :
+	       check_state_pad_stream(sd, state, fse->pad, fse->stream) ? :
 	       sd->ops->pad->enum_frame_size(sd, state, fse);
 }
 
@@ -283,11 +273,9 @@ static int call_enum_frame_interval(struct v4l2_subdev *sd,
 	if (!fie)
 		return -EINVAL;
 
-	if (!(sd->flags & V4L2_SUBDEV_FL_STREAMS))
-		fie->stream = 0;
-
 	return check_which(fie->which) ? : check_pad(sd, fie->pad) ? :
-	       check_state(sd, state, fie->which, fie->pad, fie->stream) ? :
+	       check_state_pads(sd, fie->which, state) ? :
+	       check_state_pad_stream(sd, state, fie->pad, fie->stream) ? :
 	       sd->ops->pad->enum_frame_interval(sd, state, fie);
 }
 
@@ -298,11 +286,9 @@ static inline int check_selection(struct v4l2_subdev *sd,
 	if (!sel)
 		return -EINVAL;
 
-	if (!(sd->flags & V4L2_SUBDEV_FL_STREAMS))
-		sel->stream = 0;
-
 	return check_which(sel->which) ? : check_pad(sd, sel->pad) ? :
-	       check_state(sd, state, sel->which, sel->pad, sel->stream);
+	       check_state_pads(sd, sel->which, state) ? :
+	       check_state_pad_stream(sd, state, sel->pad, sel->stream);
 }
 
 static int call_get_selection(struct v4l2_subdev *sd,
@@ -370,89 +356,32 @@ static int call_get_mbus_config(struct v4l2_subdev *sd, unsigned int pad,
 	       sd->ops->pad->get_mbus_config(sd, pad, config);
 }
 
-static int call_s_stream(struct v4l2_subdev *sd, int enable)
+static int call_set_mbus_config(struct v4l2_subdev *sd, unsigned int pad,
+				struct v4l2_mbus_config *config)
 {
-	int ret;
-
-#if IS_REACHABLE(CONFIG_LEDS_CLASS)
-	if (!IS_ERR_OR_NULL(sd->privacy_led)) {
-		if (enable)
-			led_set_brightness(sd->privacy_led,
-					   sd->privacy_led->max_brightness);
-		else
-			led_set_brightness(sd->privacy_led, 0);
-	}
-#endif
-	ret = sd->ops->video->s_stream(sd, enable);
-
-	if (!enable && ret < 0) {
-		dev_warn(sd->dev, "disabling streaming failed (%d)\n", ret);
-		return 0;
-	}
-
-	return ret;
+	return check_pad(sd, pad) ? :
+	       sd->ops->pad->get_mbus_config(sd, pad, config);
 }
 
-#ifdef CONFIG_MEDIA_CONTROLLER
-/*
- * Create state-management wrapper for pad ops dealing with subdev state. The
- * wrapper handles the case where the caller does not provide the called
- * subdev's state. This should be removed when all the callers are fixed.
- */
-#define DEFINE_STATE_WRAPPER(f, arg_type)                                  \
-	static int call_##f##_state(struct v4l2_subdev *sd,                \
-				    struct v4l2_subdev_state *_state,      \
-				    arg_type *arg)                         \
-	{                                                                  \
-		struct v4l2_subdev_state *state = _state;                  \
-		int ret;                                                   \
-		if (!_state)                                               \
-			state = v4l2_subdev_lock_and_get_active_state(sd); \
-		ret = call_##f(sd, state, arg);                            \
-		if (!_state && state)                                      \
-			v4l2_subdev_unlock_state(state);                   \
-		return ret;                                                \
-	}
-
-#else /* CONFIG_MEDIA_CONTROLLER */
-
-#define DEFINE_STATE_WRAPPER(f, arg_type)                            \
-	static int call_##f##_state(struct v4l2_subdev *sd,          \
-				    struct v4l2_subdev_state *state, \
-				    arg_type *arg)                   \
-	{                                                            \
-		return call_##f(sd, state, arg);                     \
-	}
-
-#endif /* CONFIG_MEDIA_CONTROLLER */
-
-DEFINE_STATE_WRAPPER(get_fmt, struct v4l2_subdev_format);
-DEFINE_STATE_WRAPPER(set_fmt, struct v4l2_subdev_format);
-DEFINE_STATE_WRAPPER(enum_mbus_code, struct v4l2_subdev_mbus_code_enum);
-DEFINE_STATE_WRAPPER(enum_frame_size, struct v4l2_subdev_frame_size_enum);
-DEFINE_STATE_WRAPPER(enum_frame_interval, struct v4l2_subdev_frame_interval_enum);
-DEFINE_STATE_WRAPPER(get_selection, struct v4l2_subdev_selection);
-DEFINE_STATE_WRAPPER(set_selection, struct v4l2_subdev_selection);
-
 static const struct v4l2_subdev_pad_ops v4l2_subdev_call_pad_wrappers = {
-	.get_fmt		= call_get_fmt_state,
-	.set_fmt		= call_set_fmt_state,
-	.enum_mbus_code		= call_enum_mbus_code_state,
-	.enum_frame_size	= call_enum_frame_size_state,
-	.enum_frame_interval	= call_enum_frame_interval_state,
-	.get_selection		= call_get_selection_state,
-	.set_selection		= call_set_selection_state,
+	.get_fmt		= call_get_fmt,
+	.set_fmt		= call_set_fmt,
+	.enum_mbus_code		= call_enum_mbus_code,
+	.enum_frame_size	= call_enum_frame_size,
+	.enum_frame_interval	= call_enum_frame_interval,
+	.get_selection		= call_get_selection,
+	.set_selection		= call_set_selection,
 	.get_edid		= call_get_edid,
 	.set_edid		= call_set_edid,
 	.dv_timings_cap		= call_dv_timings_cap,
 	.enum_dv_timings	= call_enum_dv_timings,
 	.get_mbus_config	= call_get_mbus_config,
+	.set_mbus_config	= call_set_mbus_config,
 };
 
 static const struct v4l2_subdev_video_ops v4l2_subdev_call_video_wrappers = {
 	.g_frame_interval	= call_g_frame_interval,
 	.s_frame_interval	= call_s_frame_interval,
-	.s_stream		= call_s_stream,
 };
 
 const struct v4l2_subdev_ops v4l2_subdev_call_wrappers = {
@@ -472,50 +401,60 @@ subdev_ioctl_get_state(struct v4l2_subdev *sd, struct v4l2_subdev_fh *subdev_fh,
 	switch (cmd) {
 	default:
 		return NULL;
+
 	case VIDIOC_SUBDEV_G_FMT:
-	case VIDIOC_SUBDEV_S_FMT:
+	case VIDIOC_SUBDEV_S_FMT: {
 		which = ((struct v4l2_subdev_format *)arg)->which;
 		break;
+	}
 	case VIDIOC_SUBDEV_G_CROP:
-	case VIDIOC_SUBDEV_S_CROP:
+	case VIDIOC_SUBDEV_S_CROP: {
 		which = ((struct v4l2_subdev_crop *)arg)->which;
 		break;
-	case VIDIOC_SUBDEV_ENUM_MBUS_CODE:
+	}
+	case VIDIOC_SUBDEV_ENUM_MBUS_CODE: {
 		which = ((struct v4l2_subdev_mbus_code_enum *)arg)->which;
 		break;
-	case VIDIOC_SUBDEV_ENUM_FRAME_SIZE:
+	}
+	case VIDIOC_SUBDEV_ENUM_FRAME_SIZE: {
 		which = ((struct v4l2_subdev_frame_size_enum *)arg)->which;
 		break;
-	case VIDIOC_SUBDEV_ENUM_FRAME_INTERVAL:
+	}
+
+	case VIDIOC_SUBDEV_ENUM_FRAME_INTERVAL: {
 		which = ((struct v4l2_subdev_frame_interval_enum *)arg)->which;
 		break;
+	}
+
 	case VIDIOC_SUBDEV_G_SELECTION:
-	case VIDIOC_SUBDEV_S_SELECTION:
+	case VIDIOC_SUBDEV_S_SELECTION: {
 		which = ((struct v4l2_subdev_selection *)arg)->which;
 		break;
+	}
+
 	case VIDIOC_SUBDEV_G_ROUTING:
-	case VIDIOC_SUBDEV_S_ROUTING:
+	case VIDIOC_SUBDEV_S_ROUTING: {
 		which = ((struct v4l2_subdev_routing *)arg)->which;
 		break;
+	}
 	}
 
 	return which == V4L2_SUBDEV_FORMAT_TRY ?
 			     subdev_fh->state :
-			     v4l2_subdev_get_unlocked_active_state(sd);
+			     v4l2_subdev_get_active_state(sd);
 }
 
-static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
-			    struct v4l2_subdev_state *state)
+static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg)
 {
 	struct video_device *vdev = video_devdata(file);
 	struct v4l2_subdev *sd = vdev_to_v4l2_subdev(vdev);
 	struct v4l2_fh *vfh = file->private_data;
 	struct v4l2_subdev_fh *subdev_fh = to_v4l2_subdev_fh(vfh);
 	bool ro_subdev = test_bit(V4L2_FL_SUBDEV_RO_DEVNODE, &vdev->flags);
-	bool streams_subdev = sd->flags & V4L2_SUBDEV_FL_STREAMS;
-	bool client_supports_streams = subdev_fh->client_caps &
-				       V4L2_SUBDEV_CLIENT_CAP_STREAMS;
+	struct v4l2_subdev_state *state;
 	int rval;
+
+	state = subdev_ioctl_get_state(sd, subdev_fh, cmd, arg);
 
 	switch (cmd) {
 	case VIDIOC_SUBDEV_QUERYCAP: {
@@ -525,7 +464,7 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 		cap->version = LINUX_VERSION_CODE;
 		cap->capabilities =
 			(ro_subdev ? V4L2_SUBDEV_CAP_RO_SUBDEV : 0) |
-			(streams_subdev ? V4L2_SUBDEV_CAP_STREAMS : 0);
+			((sd->flags & V4L2_SUBDEV_FL_MULTIPLEXED) ? V4L2_SUBDEV_CAP_MPLEXED : 0);
 
 		return 0;
 	}
@@ -639,9 +578,6 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 	case VIDIOC_SUBDEV_G_FMT: {
 		struct v4l2_subdev_format *format = arg;
 
-		if (!client_supports_streams)
-			format->stream = 0;
-
 		memset(format->reserved, 0, sizeof(format->reserved));
 		memset(format->format.reserved, 0, sizeof(format->format.reserved));
 		return v4l2_subdev_call(sd, pad, get_fmt, state, format);
@@ -653,9 +589,6 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 		if (format->which != V4L2_SUBDEV_FORMAT_TRY && ro_subdev)
 			return -EPERM;
 
-		if (!client_supports_streams)
-			format->stream = 0;
-
 		memset(format->reserved, 0, sizeof(format->reserved));
 		memset(format->format.reserved, 0, sizeof(format->format.reserved));
 		return v4l2_subdev_call(sd, pad, set_fmt, state, format);
@@ -664,9 +597,6 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 	case VIDIOC_SUBDEV_G_CROP: {
 		struct v4l2_subdev_crop *crop = arg;
 		struct v4l2_subdev_selection sel;
-
-		if (!client_supports_streams)
-			crop->stream = 0;
 
 		memset(crop->reserved, 0, sizeof(crop->reserved));
 		memset(&sel, 0, sizeof(sel));
@@ -689,9 +619,6 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 		if (crop->which != V4L2_SUBDEV_FORMAT_TRY && ro_subdev)
 			return -EPERM;
 
-		if (!client_supports_streams)
-			crop->stream = 0;
-
 		memset(crop->reserved, 0, sizeof(crop->reserved));
 		memset(&sel, 0, sizeof(sel));
 		sel.which = crop->which;
@@ -710,9 +637,6 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 	case VIDIOC_SUBDEV_ENUM_MBUS_CODE: {
 		struct v4l2_subdev_mbus_code_enum *code = arg;
 
-		if (!client_supports_streams)
-			code->stream = 0;
-
 		memset(code->reserved, 0, sizeof(code->reserved));
 		return v4l2_subdev_call(sd, pad, enum_mbus_code, state,
 					code);
@@ -721,9 +645,6 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 	case VIDIOC_SUBDEV_ENUM_FRAME_SIZE: {
 		struct v4l2_subdev_frame_size_enum *fse = arg;
 
-		if (!client_supports_streams)
-			fse->stream = 0;
-
 		memset(fse->reserved, 0, sizeof(fse->reserved));
 		return v4l2_subdev_call(sd, pad, enum_frame_size, state,
 					fse);
@@ -731,9 +652,6 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 
 	case VIDIOC_SUBDEV_G_FRAME_INTERVAL: {
 		struct v4l2_subdev_frame_interval *fi = arg;
-
-		if (!client_supports_streams)
-			fi->stream = 0;
 
 		memset(fi->reserved, 0, sizeof(fi->reserved));
 		return v4l2_subdev_call(sd, video, g_frame_interval, arg);
@@ -745,18 +663,12 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 		if (ro_subdev)
 			return -EPERM;
 
-		if (!client_supports_streams)
-			fi->stream = 0;
-
 		memset(fi->reserved, 0, sizeof(fi->reserved));
 		return v4l2_subdev_call(sd, video, s_frame_interval, arg);
 	}
 
 	case VIDIOC_SUBDEV_ENUM_FRAME_INTERVAL: {
 		struct v4l2_subdev_frame_interval_enum *fie = arg;
-
-		if (!client_supports_streams)
-			fie->stream = 0;
 
 		memset(fie->reserved, 0, sizeof(fie->reserved));
 		return v4l2_subdev_call(sd, pad, enum_frame_interval, state,
@@ -765,9 +677,6 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 
 	case VIDIOC_SUBDEV_G_SELECTION: {
 		struct v4l2_subdev_selection *sel = arg;
-
-		if (!client_supports_streams)
-			sel->stream = 0;
 
 		memset(sel->reserved, 0, sizeof(sel->reserved));
 		return v4l2_subdev_call(
@@ -779,9 +688,6 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 
 		if (sel->which != V4L2_SUBDEV_FORMAT_TRY && ro_subdev)
 			return -EPERM;
-
-		if (!client_supports_streams)
-			sel->stream = 0;
 
 		memset(sel->reserved, 0, sizeof(sel->reserved));
 		return v4l2_subdev_call(
@@ -853,10 +759,7 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 		struct v4l2_subdev_routing *routing = arg;
 		struct v4l2_subdev_krouting *krouting;
 
-		if (!v4l2_subdev_enable_streams_api)
-			return -ENOIOCTLCMD;
-
-		if (!(sd->flags & V4L2_SUBDEV_FL_STREAMS))
+		if (!(sd->flags & V4L2_SUBDEV_FL_MULTIPLEXED))
 			return -ENOIOCTLCMD;
 
 		memset(routing->reserved, 0, sizeof(routing->reserved));
@@ -883,10 +786,7 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 		struct v4l2_subdev_krouting krouting = {};
 		unsigned int i;
 
-		if (!v4l2_subdev_enable_streams_api)
-			return -ENOIOCTLCMD;
-
-		if (!(sd->flags & V4L2_SUBDEV_FL_STREAMS))
+		if (!(sd->flags & V4L2_SUBDEV_FL_MULTIPLEXED))
 			return -ENOIOCTLCMD;
 
 		if (routing->which != V4L2_SUBDEV_FORMAT_TRY && ro_subdev)
@@ -898,16 +798,15 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 			const struct v4l2_subdev_route *route = &routes[i];
 			const struct media_pad *pads = sd->entity.pads;
 
-			if (route->sink_stream > V4L2_SUBDEV_MAX_STREAM_ID ||
-			    route->source_stream > V4L2_SUBDEV_MAX_STREAM_ID)
-				return -EINVAL;
+			/* Do not check sink pad for source routes */
+			if (!(route->flags & V4L2_SUBDEV_ROUTE_FL_SOURCE)) {
+				if (route->sink_pad >= sd->entity.num_pads)
+					return -EINVAL;
 
-			if (route->sink_pad >= sd->entity.num_pads)
-				return -EINVAL;
-
-			if (!(pads[route->sink_pad].flags &
-			      MEDIA_PAD_FL_SINK))
-				return -EINVAL;
+				if (!(pads[route->sink_pad].flags &
+				      MEDIA_PAD_FL_SINK))
+					return -EINVAL;
+			}
 
 			if (route->source_pad >= sd->entity.num_pads)
 				return -EINVAL;
@@ -922,33 +821,6 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg,
 
 		return v4l2_subdev_call(sd, pad, set_routing, state,
 					routing->which, &krouting);
-	}
-
-	case VIDIOC_SUBDEV_G_CLIENT_CAP: {
-		struct v4l2_subdev_client_capability *client_cap = arg;
-
-		client_cap->capabilities = subdev_fh->client_caps;
-
-		return 0;
-	}
-
-	case VIDIOC_SUBDEV_S_CLIENT_CAP: {
-		struct v4l2_subdev_client_capability *client_cap = arg;
-
-		/*
-		 * Clear V4L2_SUBDEV_CLIENT_CAP_STREAMS if streams API is not
-		 * enabled. Remove this when streams API is no longer
-		 * experimental.
-		 */
-		if (!v4l2_subdev_enable_streams_api)
-			client_cap->capabilities &= ~V4L2_SUBDEV_CLIENT_CAP_STREAMS;
-
-		/* Filter out unsupported capabilities */
-		client_cap->capabilities &= V4L2_SUBDEV_CLIENT_CAP_STREAMS;
-
-		subdev_fh->client_caps = client_cap->capabilities;
-
-		return 0;
 	}
 
 	default:
@@ -966,24 +838,8 @@ static long subdev_do_ioctl_lock(struct file *file, unsigned int cmd, void *arg)
 
 	if (lock && mutex_lock_interruptible(lock))
 		return -ERESTARTSYS;
-
-	if (video_is_registered(vdev)) {
-		struct v4l2_subdev *sd = vdev_to_v4l2_subdev(vdev);
-		struct v4l2_fh *vfh = file->private_data;
-		struct v4l2_subdev_fh *subdev_fh = to_v4l2_subdev_fh(vfh);
-		struct v4l2_subdev_state *state;
-
-		state = subdev_ioctl_get_state(sd, subdev_fh, cmd, arg);
-
-		if (state)
-			v4l2_subdev_lock_state(state);
-
-		ret = subdev_do_ioctl(file, cmd, arg, state);
-
-		if (state)
-			v4l2_subdev_unlock_state(state);
-	}
-
+	if (video_is_registered(vdev))
+		ret = subdev_do_ioctl(file, cmd, arg);
 	if (lock)
 		mutex_unlock(lock);
 	return ret;
@@ -1050,6 +906,71 @@ const struct v4l2_file_operations v4l2_subdev_fops = {
 	.poll = subdev_poll,
 };
 
+static int
+v4l2_init_stream_configs(struct v4l2_subdev_stream_configs *stream_configs,
+			 const struct v4l2_subdev_krouting *routing)
+{
+	u32 num_configs = 0;
+	unsigned int i;
+	u32 format_idx = 0;
+
+	kvfree(stream_configs->configs);
+	stream_configs->configs = NULL;
+	stream_configs->num_configs = 0;
+
+	/* Count number of formats needed */
+	for (i = 0; i < routing->num_routes; ++i) {
+		struct v4l2_subdev_route *route = &routing->routes[i];
+
+		if (!(route->flags & V4L2_SUBDEV_ROUTE_FL_ACTIVE))
+			continue;
+
+		/*
+		 * Each route needs a format on both ends of the route, except
+		 * for source streams which only need one format.
+		 */
+		num_configs +=
+			(route->flags & V4L2_SUBDEV_ROUTE_FL_SOURCE) ? 1 : 2;
+	}
+
+	if (num_configs) {
+		stream_configs->configs =
+			kvcalloc(num_configs, sizeof(*stream_configs->configs),
+				 GFP_KERNEL);
+
+		if (!stream_configs->configs)
+			return -ENOMEM;
+
+		stream_configs->num_configs = num_configs;
+	}
+
+	/*
+	 * Fill in the 'pad' and stream' value for each item in the array from
+	 * the routing table
+	 */
+	for (i = 0; i < routing->num_routes; ++i) {
+		struct v4l2_subdev_route *route = &routing->routes[i];
+		u32 idx;
+
+		if (!(route->flags & V4L2_SUBDEV_ROUTE_FL_ACTIVE))
+			continue;
+
+		if (!(route->flags & V4L2_SUBDEV_ROUTE_FL_SOURCE)) {
+			idx = format_idx++;
+
+			stream_configs->configs[idx].pad = route->sink_pad;
+			stream_configs->configs[idx].stream = route->sink_stream;
+		}
+
+		idx = format_idx++;
+
+		stream_configs->configs[idx].pad = route->source_pad;
+		stream_configs->configs[idx].stream = route->source_stream;
+	}
+
+	return 0;
+}
+
 #ifdef CONFIG_MEDIA_CONTROLLER
 
 int v4l2_subdev_get_fwnode_pad_1_to_1(struct media_entity *entity,
@@ -1066,7 +987,7 @@ int v4l2_subdev_get_fwnode_pad_1_to_1(struct media_entity *entity,
 	fwnode = fwnode_graph_get_port_parent(endpoint->local_fwnode);
 	fwnode_handle_put(fwnode);
 
-	if (device_match_fwnode(sd->dev, fwnode))
+	if (dev_fwnode(sd->dev) == fwnode)
 		return endpoint->port;
 
 	return -ENXIO;
@@ -1078,220 +999,224 @@ int v4l2_subdev_link_validate_default(struct v4l2_subdev *sd,
 				      struct v4l2_subdev_format *source_fmt,
 				      struct v4l2_subdev_format *sink_fmt)
 {
-	bool pass = true;
-
 	/* The width, height and code must match. */
-	if (source_fmt->format.width != sink_fmt->format.width) {
-		dev_dbg(sd->entity.graph_obj.mdev->dev,
-			"%s: width does not match (source %u, sink %u)\n",
-			__func__,
-			source_fmt->format.width, sink_fmt->format.width);
-		pass = false;
-	}
-
-	if (source_fmt->format.height != sink_fmt->format.height) {
-		dev_dbg(sd->entity.graph_obj.mdev->dev,
-			"%s: height does not match (source %u, sink %u)\n",
-			__func__,
-			source_fmt->format.height, sink_fmt->format.height);
-		pass = false;
-	}
-
-	if (source_fmt->format.code != sink_fmt->format.code) {
-		dev_dbg(sd->entity.graph_obj.mdev->dev,
-			"%s: media bus code does not match (source 0x%8.8x, sink 0x%8.8x)\n",
-			__func__,
-			source_fmt->format.code, sink_fmt->format.code);
-		pass = false;
-	}
+	if (source_fmt->format.width != sink_fmt->format.width
+	    || source_fmt->format.height != sink_fmt->format.height
+	    || source_fmt->format.code != sink_fmt->format.code)
+		return -EPIPE;
 
 	/* The field order must match, or the sink field order must be NONE
 	 * to support interlaced hardware connected to bridges that support
 	 * progressive formats only.
 	 */
 	if (source_fmt->format.field != sink_fmt->format.field &&
-	    sink_fmt->format.field != V4L2_FIELD_NONE) {
-		dev_dbg(sd->entity.graph_obj.mdev->dev,
-			"%s: field does not match (source %u, sink %u)\n",
-			__func__,
-			source_fmt->format.field, sink_fmt->format.field);
-		pass = false;
-	}
+	    sink_fmt->format.field != V4L2_FIELD_NONE)
+		return -EPIPE;
 
-	if (pass)
-		return 0;
-
-	dev_dbg(sd->entity.graph_obj.mdev->dev,
-		"%s: link was \"%s\":%u -> \"%s\":%u\n", __func__,
-		link->source->entity->name, link->source->index,
-		link->sink->entity->name, link->sink->index);
-
-	return -EPIPE;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(v4l2_subdev_link_validate_default);
 
 static int
-v4l2_subdev_link_validate_get_format(struct media_pad *pad, u32 stream,
-				     struct v4l2_subdev_format *fmt,
-				     bool states_locked)
+v4l2_subdev_link_validate_get_format(struct media_pad *pad,
+				     u32 stream,
+				     struct v4l2_subdev_format *fmt)
 {
-	struct v4l2_subdev_state *state;
-	struct v4l2_subdev *sd;
-	int ret;
+	if (is_media_entity_v4l2_subdev(pad->entity)) {
+		struct v4l2_subdev *sd =
+			media_entity_to_v4l2_subdev(pad->entity);
+		struct v4l2_subdev_state *state;
 
-	if (!is_media_entity_v4l2_subdev(pad->entity)) {
-		WARN(pad->entity->function != MEDIA_ENT_F_IO_V4L,
-		     "Driver bug! Wrong media entity type 0x%08x, entity %s\n",
-		     pad->entity->function, pad->entity->name);
+		state = v4l2_subdev_get_active_state(sd);
 
-		return -EINVAL;
+		fmt->which = V4L2_SUBDEV_FORMAT_ACTIVE;
+		fmt->pad = pad->index;
+		fmt->stream = stream;
+		return v4l2_subdev_call(sd, pad, get_fmt, state, fmt);
 	}
 
-	sd = media_entity_to_v4l2_subdev(pad->entity);
+	WARN(pad->entity->function != MEDIA_ENT_F_IO_V4L,
+	     "Driver bug! Wrong media entity type 0x%08x, entity %s\n",
+	     pad->entity->function, pad->entity->name);
 
-	fmt->which = V4L2_SUBDEV_FORMAT_ACTIVE;
-	fmt->pad = pad->index;
-	fmt->stream = stream;
-
-	if (states_locked)
-		state = v4l2_subdev_get_locked_active_state(sd);
-	else
-		state = v4l2_subdev_lock_and_get_active_state(sd);
-
-	ret = v4l2_subdev_call(sd, pad, get_fmt, state, fmt);
-
-	if (!states_locked && state)
-		v4l2_subdev_unlock_state(state);
-
-	return ret;
+	return -EINVAL;
 }
 
-#if defined(CONFIG_VIDEO_V4L2_SUBDEV_API)
-
-static void __v4l2_link_validate_get_streams(struct media_pad *pad,
-					     u64 *streams_mask,
-					     bool states_locked)
+static int cmp_u32(const void *a, const void *b)
 {
-	struct v4l2_subdev_route *route;
-	struct v4l2_subdev_state *state;
+	u32 a32 = *(u32 *)a;
+	u32 b32 = *(u32 *)b;
+
+	return a32 > b32 ? 1 : (a32 < b32 ? -1 : 0);
+}
+
+static int v4l2_link_validate_get_streams(struct media_link *link,
+					  bool is_source, u32 *out_num_streams,
+					  const u32 **out_streams,
+					  bool *allocated)
+{
+	static const u32 default_streams[] = { 0 };
+	struct v4l2_subdev_krouting *routing;
 	struct v4l2_subdev *subdev;
+	u32 num_streams;
+	u32 *streams;
+	unsigned int i;
+	struct v4l2_subdev_state *state;
 
-	subdev = media_entity_to_v4l2_subdev(pad->entity);
-
-	*streams_mask = 0;
-
-	if (states_locked)
-		state = v4l2_subdev_get_locked_active_state(subdev);
+	if (is_source)
+		subdev = media_entity_to_v4l2_subdev(link->source->entity);
 	else
-		state = v4l2_subdev_lock_and_get_active_state(subdev);
+		subdev = media_entity_to_v4l2_subdev(link->sink->entity);
 
-	if (WARN_ON(!state))
-		return;
+	if (!(subdev->flags & V4L2_SUBDEV_FL_MULTIPLEXED)) {
+		*out_num_streams = 1;
+		*out_streams = default_streams;
+		*allocated = false;
+		return 0;
+	}
 
-	for_each_active_route(&state->routing, route) {
+	state = v4l2_subdev_lock_active_state(subdev);
+
+	routing = &state->routing;
+
+	streams = kmalloc_array(routing->num_routes, sizeof(u32), GFP_KERNEL);
+
+	if (!streams) {
+		v4l2_subdev_unlock_state(state);
+		return -ENOMEM;
+	}
+
+	num_streams = 0;
+
+	for (i = 0; i < routing->num_routes; ++i) {
+		struct v4l2_subdev_route *route = &routing->routes[i];
+		int j;
 		u32 route_pad;
 		u32 route_stream;
+		u32 link_pad;
 
-		if (pad->flags & MEDIA_PAD_FL_SOURCE) {
+		if (is_source) {
 			route_pad = route->source_pad;
 			route_stream = route->source_stream;
+			link_pad = link->source->index;
 		} else {
 			route_pad = route->sink_pad;
 			route_stream = route->sink_stream;
+			link_pad = link->sink->index;
 		}
 
-		if (route_pad != pad->index)
+		if (!(route->flags & V4L2_SUBDEV_ROUTE_FL_ACTIVE))
 			continue;
 
-		*streams_mask |= BIT_ULL(route_stream);
+		if (route_pad != link_pad)
+			continue;
+
+		/* look for duplicates... */
+		for (j = 0; j < num_streams; ++j) {
+			if (streams[j] == route_stream)
+				break;
+		}
+
+		/* ...and drop the stream if we already have it */
+		if (j != num_streams)
+			continue;
+
+		streams[num_streams++] = route_stream;
 	}
 
-	if (!states_locked)
-		v4l2_subdev_unlock_state(state);
+	v4l2_subdev_unlock_state(state);
+
+	sort(streams, num_streams, sizeof(u32), &cmp_u32, NULL);
+
+	*out_num_streams = num_streams;
+	*out_streams = streams;
+	*allocated = true;
+
+	return 0;
 }
 
-#endif /* CONFIG_VIDEO_V4L2_SUBDEV_API */
-
-static void v4l2_link_validate_get_streams(struct media_pad *pad,
-					   u64 *streams_mask,
-					   bool states_locked)
-{
-	struct v4l2_subdev *subdev = media_entity_to_v4l2_subdev(pad->entity);
-
-	if (!(subdev->flags & V4L2_SUBDEV_FL_STREAMS)) {
-		/* Non-streams subdevs have an implicit stream 0 */
-		*streams_mask = BIT_ULL(0);
-		return;
-	}
-
-#if defined(CONFIG_VIDEO_V4L2_SUBDEV_API)
-	__v4l2_link_validate_get_streams(pad, streams_mask, states_locked);
-#else
-	/* This shouldn't happen */
-	*streams_mask = 0;
-#endif
-}
-
-static int v4l2_subdev_link_validate_locked(struct media_link *link, bool states_locked)
+int v4l2_subdev_link_validate(struct media_link *link)
 {
 	struct v4l2_subdev *sink_subdev =
 		media_entity_to_v4l2_subdev(link->sink->entity);
 	struct device *dev = sink_subdev->entity.graph_obj.mdev->dev;
-	u64 source_streams_mask;
-	u64 sink_streams_mask;
-	u64 dangling_sink_streams;
-	u32 stream;
+	u32 num_source_streams;
+	const u32 *source_streams;
+	bool source_allocated;
+	u32 num_sink_streams;
+	const u32 *sink_streams;
+	bool sink_allocated;
+	unsigned int sink_idx;
+	unsigned int source_idx;
 	int ret;
 
 	dev_dbg(dev, "validating link \"%s\":%u -> \"%s\":%u\n",
 		link->source->entity->name, link->source->index,
 		link->sink->entity->name, link->sink->index);
 
-	v4l2_link_validate_get_streams(link->source, &source_streams_mask, states_locked);
-	v4l2_link_validate_get_streams(link->sink, &sink_streams_mask, states_locked);
+	ret = v4l2_link_validate_get_streams(link, true, &num_source_streams,
+					     &source_streams,
+					     &source_allocated);
+	if (ret)
+		return ret;
 
-	/*
-	 * It is ok to have more source streams than sink streams as extra
-	 * source streams can just be ignored by the receiver, but having extra
-	 * sink streams is an error as streams must have a source.
-	 */
-	dangling_sink_streams = (source_streams_mask ^ sink_streams_mask) &
-				sink_streams_mask;
-	if (dangling_sink_streams) {
-		dev_err(dev, "Dangling sink streams: mask %#llx\n",
-			dangling_sink_streams);
-		return -EINVAL;
+	ret = v4l2_link_validate_get_streams(link, false, &num_sink_streams,
+					     &sink_streams, &sink_allocated);
+	if (ret)
+		goto free_source;
+
+	/* It is ok to have more source streams than sink streams */
+	if (num_source_streams < num_sink_streams) {
+		dev_err(dev,
+			"Not enough source streams: %d < %d\n",
+			num_source_streams, num_sink_streams);
+		ret = -EINVAL;
+		goto out;
 	}
 
 	/* Validate source and sink stream formats */
 
-	for (stream = 0; stream < sizeof(sink_streams_mask) * 8; ++stream) {
-		struct v4l2_subdev_format sink_fmt, source_fmt;
+	source_idx = 0;
 
-		if (!(sink_streams_mask & BIT_ULL(stream)))
-			continue;
+	for (sink_idx = 0; sink_idx < num_sink_streams; ++sink_idx) {
+		struct v4l2_subdev_format sink_fmt, source_fmt;
+		u32 stream;
+
+		stream = sink_streams[sink_idx];
+
+		for (; source_idx < num_source_streams; ++source_idx) {
+			if (source_streams[source_idx] == stream)
+				break;
+		}
+
+		if (source_idx == num_source_streams) {
+			dev_err(dev, "No source stream for sink stream %u\n",
+				stream);
+			ret = -EINVAL;
+			goto out;
+		}
 
 		dev_dbg(dev, "validating stream \"%s\":%u:%u -> \"%s\":%u:%u\n",
 			link->source->entity->name, link->source->index, stream,
 			link->sink->entity->name, link->sink->index, stream);
 
 		ret = v4l2_subdev_link_validate_get_format(link->source, stream,
-							   &source_fmt, states_locked);
+							   &source_fmt);
 		if (ret < 0) {
-			dev_dbg(dev,
-				"Failed to get format for \"%s\":%u:%u (but that's ok)\n",
+			dev_dbg(dev, "Failed to get format for \"%s\":%u:%u (but that's ok)\n",
 				link->source->entity->name, link->source->index,
 				stream);
+			ret = 0;
 			continue;
 		}
 
 		ret = v4l2_subdev_link_validate_get_format(link->sink, stream,
-							   &sink_fmt, states_locked);
+							   &sink_fmt);
 		if (ret < 0) {
-			dev_dbg(dev,
-				"Failed to get format for \"%s\":%u:%u (but that's ok)\n",
+			dev_dbg(dev, "Failed to get format for \"%s\":%u:%u (but that's ok)\n",
 				link->sink->entity->name, link->sink->index,
 				stream);
+			ret = 0;
 			continue;
 		}
 
@@ -1302,68 +1227,36 @@ static int v4l2_subdev_link_validate_locked(struct media_link *link, bool states
 			continue;
 
 		if (ret != -ENOIOCTLCMD)
-			return ret;
+			goto out;
 
 		ret = v4l2_subdev_link_validate_default(sink_subdev, link,
 							&source_fmt, &sink_fmt);
 
 		if (ret)
-			return ret;
+			goto out;
 	}
 
-	return 0;
-}
+out:
+	if (sink_allocated)
+		kfree(sink_streams);
 
-int v4l2_subdev_link_validate(struct media_link *link)
-{
-	struct v4l2_subdev *source_sd, *sink_sd;
-	struct v4l2_subdev_state *source_state, *sink_state;
-	bool states_locked;
-	int ret;
-
-	if (!is_media_entity_v4l2_subdev(link->sink->entity) ||
-	    !is_media_entity_v4l2_subdev(link->source->entity)) {
-		pr_warn_once("%s of link '%s':%u->'%s':%u is not a V4L2 sub-device, driver bug!\n",
-			     !is_media_entity_v4l2_subdev(link->sink->entity) ?
-			     "sink" : "source",
-			     link->source->entity->name, link->source->index,
-			     link->sink->entity->name, link->sink->index);
-		return 0;
-	}
-
-	sink_sd = media_entity_to_v4l2_subdev(link->sink->entity);
-	source_sd = media_entity_to_v4l2_subdev(link->source->entity);
-
-	sink_state = v4l2_subdev_get_unlocked_active_state(sink_sd);
-	source_state = v4l2_subdev_get_unlocked_active_state(source_sd);
-
-	states_locked = sink_state && source_state;
-
-	if (states_locked) {
-		v4l2_subdev_lock_state(sink_state);
-		v4l2_subdev_lock_state(source_state);
-	}
-
-	ret = v4l2_subdev_link_validate_locked(link, states_locked);
-
-	if (states_locked) {
-		v4l2_subdev_unlock_state(sink_state);
-		v4l2_subdev_unlock_state(source_state);
-	}
+free_source:
+	if (source_allocated)
+		kfree(source_streams);
 
 	return ret;
 }
 EXPORT_SYMBOL_GPL(v4l2_subdev_link_validate);
 
-bool v4l2_subdev_has_pad_interdep(struct media_entity *entity,
-				  unsigned int pad0, unsigned int pad1)
+bool v4l2_subdev_has_route(struct media_entity *entity, unsigned int pad0,
+			   unsigned int pad1)
 {
 	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(entity);
 	struct v4l2_subdev_krouting *routing;
-	struct v4l2_subdev_state *state;
 	unsigned int i;
+	struct v4l2_subdev_state *state;
 
-	state = v4l2_subdev_lock_and_get_active_state(sd);
+	state = v4l2_subdev_lock_active_state(sd);
 
 	routing = &state->routing;
 
@@ -1384,7 +1277,7 @@ bool v4l2_subdev_has_pad_interdep(struct media_entity *entity,
 
 	return false;
 }
-EXPORT_SYMBOL_GPL(v4l2_subdev_has_pad_interdep);
+EXPORT_SYMBOL_GPL(v4l2_subdev_has_route);
 
 struct v4l2_subdev_state *
 __v4l2_subdev_state_alloc(struct v4l2_subdev *sd, const char *lock_name,
@@ -1397,30 +1290,20 @@ __v4l2_subdev_state_alloc(struct v4l2_subdev *sd, const char *lock_name,
 	if (!state)
 		return ERR_PTR(-ENOMEM);
 
-	__mutex_init(&state->_lock, lock_name, lock_key);
-	if (sd->state_lock)
-		state->lock = sd->state_lock;
-	else
-		state->lock = &state->_lock;
+	__mutex_init(&state->lock, lock_name, lock_key);
 
 	/* Drivers that support streams do not need the legacy pad config */
-	if (!(sd->flags & V4L2_SUBDEV_FL_STREAMS) && sd->entity.num_pads) {
-		state->pads = kvcalloc(sd->entity.num_pads,
-				       sizeof(*state->pads), GFP_KERNEL);
+	if (!(sd->flags & V4L2_SUBDEV_FL_MULTIPLEXED) && sd->entity.num_pads) {
+		state->pads = kvmalloc_array(sd->entity.num_pads,
+					     sizeof(*state->pads),
+					     GFP_KERNEL | __GFP_ZERO);
 		if (!state->pads) {
 			ret = -ENOMEM;
 			goto err;
 		}
 	}
 
-	/*
-	 * There can be no race at this point, but we lock the state anyway to
-	 * satisfy lockdep checks.
-	 */
-	v4l2_subdev_lock_state(state);
 	ret = v4l2_subdev_call(sd, pad, init_cfg, state);
-	v4l2_subdev_unlock_state(state);
-
 	if (ret < 0 && ret != -ENOIOCTLCMD)
 		goto err;
 
@@ -1441,14 +1324,43 @@ void __v4l2_subdev_state_free(struct v4l2_subdev_state *state)
 	if (!state)
 		return;
 
-	mutex_destroy(&state->_lock);
+	mutex_destroy(&state->lock);
 
-	kfree(state->routing.routes);
+	kvfree(state->routing.routes);
 	kvfree(state->stream_configs.configs);
 	kvfree(state->pads);
 	kfree(state);
 }
 EXPORT_SYMBOL_GPL(__v4l2_subdev_state_free);
+
+#endif /* CONFIG_MEDIA_CONTROLLER */
+
+void v4l2_subdev_init(struct v4l2_subdev *sd, const struct v4l2_subdev_ops *ops)
+{
+	INIT_LIST_HEAD(&sd->list);
+	BUG_ON(!ops);
+	sd->ops = ops;
+	sd->v4l2_dev = NULL;
+	sd->flags = 0;
+	sd->name[0] = '\0';
+	sd->grp_id = 0;
+	sd->dev_priv = NULL;
+	sd->host_priv = NULL;
+#if defined(CONFIG_MEDIA_CONTROLLER)
+	sd->entity.name = sd->name;
+	sd->entity.obj_type = MEDIA_ENTITY_TYPE_V4L2_SUBDEV;
+	sd->entity.function = MEDIA_ENT_F_V4L2_SUBDEV_UNKNOWN;
+#endif
+}
+EXPORT_SYMBOL(v4l2_subdev_init);
+
+void v4l2_subdev_notify_event(struct v4l2_subdev *sd,
+			      const struct v4l2_event *ev)
+{
+	v4l2_event_queue(sd->devnode, ev);
+	v4l2_subdev_notify(sd, V4L2_DEVICE_NOTIFY_EVENT, (void *)ev);
+}
+EXPORT_SYMBOL_GPL(v4l2_subdev_notify_event);
 
 int __v4l2_subdev_init_finalize(struct v4l2_subdev *sd, const char *name,
 				struct lock_class_key *key)
@@ -1459,7 +1371,7 @@ int __v4l2_subdev_init_finalize(struct v4l2_subdev *sd, const char *name,
 	if (IS_ERR(state))
 		return PTR_ERR(state);
 
-	sd->active_state = state;
+	sd->state = state;
 
 	return 0;
 }
@@ -1467,141 +1379,58 @@ EXPORT_SYMBOL_GPL(__v4l2_subdev_init_finalize);
 
 void v4l2_subdev_cleanup(struct v4l2_subdev *sd)
 {
-	__v4l2_subdev_state_free(sd->active_state);
-	sd->active_state = NULL;
+	__v4l2_subdev_state_free(sd->state);
+	sd->state = NULL;
 }
 EXPORT_SYMBOL_GPL(v4l2_subdev_cleanup);
 
-#if defined(CONFIG_VIDEO_V4L2_SUBDEV_API)
-
-static int
-v4l2_subdev_init_stream_configs(struct v4l2_subdev_stream_configs *stream_configs,
-				const struct v4l2_subdev_krouting *routing)
+struct v4l2_subdev_state *v4l2_subdev_lock_active_state(struct v4l2_subdev *sd)
 {
-	struct v4l2_subdev_stream_configs new_configs = { 0 };
-	struct v4l2_subdev_route *route;
-	u32 idx;
+	mutex_lock(&sd->state->lock);
 
-	/* Count number of formats needed */
-	for_each_active_route(routing, route) {
-		/*
-		 * Each route needs a format on both ends of the route.
-		 */
-		new_configs.num_configs += 2;
-	}
-
-	if (new_configs.num_configs) {
-		new_configs.configs = kvcalloc(new_configs.num_configs,
-					       sizeof(*new_configs.configs),
-					       GFP_KERNEL);
-
-		if (!new_configs.configs)
-			return -ENOMEM;
-	}
-
-	/*
-	 * Fill in the 'pad' and stream' value for each item in the array from
-	 * the routing table
-	 */
-	idx = 0;
-
-	for_each_active_route(routing, route) {
-		new_configs.configs[idx].pad = route->sink_pad;
-		new_configs.configs[idx].stream = route->sink_stream;
-
-		idx++;
-
-		new_configs.configs[idx].pad = route->source_pad;
-		new_configs.configs[idx].stream = route->source_stream;
-
-		idx++;
-	}
-
-	kvfree(stream_configs->configs);
-	*stream_configs = new_configs;
-
-	return 0;
+	return sd->state;
 }
+EXPORT_SYMBOL_GPL(v4l2_subdev_lock_active_state);
 
-int v4l2_subdev_get_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_state *state,
-			struct v4l2_subdev_format *format)
+void v4l2_subdev_lock_state(struct v4l2_subdev_state *state)
 {
-	struct v4l2_mbus_framefmt *fmt;
-
-	if (sd->flags & V4L2_SUBDEV_FL_STREAMS)
-		fmt = v4l2_subdev_state_get_stream_format(state, format->pad,
-							  format->stream);
-	else if (format->pad < sd->entity.num_pads && format->stream == 0)
-		fmt = v4l2_subdev_get_pad_format(sd, state, format->pad);
-	else
-		fmt = NULL;
-
-	if (!fmt)
-		return -EINVAL;
-
-	format->format = *fmt;
-
-	return 0;
+	mutex_lock(&state->lock);
 }
-EXPORT_SYMBOL_GPL(v4l2_subdev_get_fmt);
+EXPORT_SYMBOL_GPL(v4l2_subdev_lock_state);
+
+void v4l2_subdev_unlock_state(struct v4l2_subdev_state *state)
+{
+	mutex_unlock(&state->lock);
+}
+EXPORT_SYMBOL_GPL(v4l2_subdev_unlock_state);
 
 int v4l2_subdev_set_routing(struct v4l2_subdev *sd,
 			    struct v4l2_subdev_state *state,
-			    const struct v4l2_subdev_krouting *routing)
+			    struct v4l2_subdev_krouting *routing)
 {
 	struct v4l2_subdev_krouting *dst = &state->routing;
 	const struct v4l2_subdev_krouting *src = routing;
-	struct v4l2_subdev_krouting new_routing = { 0 };
-	size_t bytes;
-	int r;
 
-	if (unlikely(check_mul_overflow((size_t)src->num_routes,
-					sizeof(*src->routes), &bytes)))
-		return -EOVERFLOW;
+	lockdep_assert_held(&state->lock);
 
-	lockdep_assert_held(state->lock);
+	kvfree(dst->routes);
+	dst->routes = NULL;
+	dst->num_routes = 0;
 
 	if (src->num_routes > 0) {
-		new_routing.routes = kmemdup(src->routes, bytes, GFP_KERNEL);
-		if (!new_routing.routes)
+		dst->routes = kvmalloc_array(src->num_routes,
+					     sizeof(*src->routes), GFP_KERNEL);
+		if (!dst->routes)
 			return -ENOMEM;
+
+		memcpy(dst->routes, src->routes,
+		       src->num_routes * sizeof(*src->routes));
+		dst->num_routes = src->num_routes;
 	}
 
-	new_routing.num_routes = src->num_routes;
-
-	r = v4l2_subdev_init_stream_configs(&state->stream_configs,
-					    &new_routing);
-	if (r) {
-		kfree(new_routing.routes);
-		return r;
-	}
-
-	kfree(dst->routes);
-	*dst = new_routing;
-
-	return 0;
+	return v4l2_init_stream_configs(&state->stream_configs, dst);
 }
 EXPORT_SYMBOL_GPL(v4l2_subdev_set_routing);
-
-struct v4l2_subdev_route *
-__v4l2_subdev_next_active_route(const struct v4l2_subdev_krouting *routing,
-				struct v4l2_subdev_route *route)
-{
-	if (route)
-		++route;
-	else
-		route = &routing->routes[0];
-
-	for (; route < routing->routes + routing->num_routes; ++route) {
-		if (!(route->flags & V4L2_SUBDEV_ROUTE_FL_ACTIVE))
-			continue;
-
-		return route;
-	}
-
-	return NULL;
-}
-EXPORT_SYMBOL_GPL(__v4l2_subdev_next_active_route);
 
 int v4l2_subdev_set_routing_with_fmt(struct v4l2_subdev *sd,
 				     struct v4l2_subdev_state *state,
@@ -1626,13 +1455,13 @@ int v4l2_subdev_set_routing_with_fmt(struct v4l2_subdev *sd,
 EXPORT_SYMBOL_GPL(v4l2_subdev_set_routing_with_fmt);
 
 struct v4l2_mbus_framefmt *
-v4l2_subdev_state_get_stream_format(struct v4l2_subdev_state *state,
-				    unsigned int pad, u32 stream)
+v4l2_state_get_stream_format(struct v4l2_subdev_state *state, unsigned int pad,
+			     u32 stream)
 {
 	struct v4l2_subdev_stream_configs *stream_configs;
 	unsigned int i;
 
-	lockdep_assert_held(state->lock);
+	lockdep_assert_held(&state->lock);
 
 	stream_configs = &state->stream_configs;
 
@@ -1644,53 +1473,10 @@ v4l2_subdev_state_get_stream_format(struct v4l2_subdev_state *state,
 
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(v4l2_subdev_state_get_stream_format);
+EXPORT_SYMBOL_GPL(v4l2_state_get_stream_format);
 
-struct v4l2_rect *
-v4l2_subdev_state_get_stream_crop(struct v4l2_subdev_state *state,
-				  unsigned int pad, u32 stream)
-{
-	struct v4l2_subdev_stream_configs *stream_configs;
-	unsigned int i;
-
-	lockdep_assert_held(state->lock);
-
-	stream_configs = &state->stream_configs;
-
-	for (i = 0; i < stream_configs->num_configs; ++i) {
-		if (stream_configs->configs[i].pad == pad &&
-		    stream_configs->configs[i].stream == stream)
-			return &stream_configs->configs[i].crop;
-	}
-
-	return NULL;
-}
-EXPORT_SYMBOL_GPL(v4l2_subdev_state_get_stream_crop);
-
-struct v4l2_rect *
-v4l2_subdev_state_get_stream_compose(struct v4l2_subdev_state *state,
-				     unsigned int pad, u32 stream)
-{
-	struct v4l2_subdev_stream_configs *stream_configs;
-	unsigned int i;
-
-	lockdep_assert_held(state->lock);
-
-	stream_configs = &state->stream_configs;
-
-	for (i = 0; i < stream_configs->num_configs; ++i) {
-		if (stream_configs->configs[i].pad == pad &&
-		    stream_configs->configs[i].stream == stream)
-			return &stream_configs->configs[i].compose;
-	}
-
-	return NULL;
-}
-EXPORT_SYMBOL_GPL(v4l2_subdev_state_get_stream_compose);
-
-int v4l2_subdev_routing_find_opposite_end(const struct v4l2_subdev_krouting *routing,
-					  u32 pad, u32 stream, u32 *other_pad,
-					  u32 *other_stream)
+int v4l2_state_find_opposite_end(struct v4l2_subdev_krouting *routing, u32 pad,
+				 u32 stream, u32 *other_pad, u32 *other_stream)
 {
 	unsigned int i;
 
@@ -1699,534 +1485,79 @@ int v4l2_subdev_routing_find_opposite_end(const struct v4l2_subdev_krouting *rou
 
 		if (route->source_pad == pad &&
 		    route->source_stream == stream) {
-			if (other_pad)
-				*other_pad = route->sink_pad;
-			if (other_stream)
-				*other_stream = route->sink_stream;
+			*other_pad = route->sink_pad;
+			*other_stream = route->sink_stream;
 			return 0;
 		}
 
 		if (route->sink_pad == pad && route->sink_stream == stream) {
-			if (other_pad)
-				*other_pad = route->source_pad;
-			if (other_stream)
-				*other_stream = route->source_stream;
+			*other_pad = route->source_pad;
+			*other_stream = route->source_stream;
 			return 0;
 		}
 	}
 
 	return -EINVAL;
 }
-EXPORT_SYMBOL_GPL(v4l2_subdev_routing_find_opposite_end);
+EXPORT_SYMBOL_GPL(v4l2_state_find_opposite_end);
 
 struct v4l2_mbus_framefmt *
-v4l2_subdev_state_get_opposite_stream_format(struct v4l2_subdev_state *state,
-					     u32 pad, u32 stream)
+v4l2_state_get_opposite_stream_format(struct v4l2_subdev_state *state, u32 pad,
+				      u32 stream)
 {
 	u32 other_pad, other_stream;
 	int ret;
 
-	ret = v4l2_subdev_routing_find_opposite_end(&state->routing,
-						    pad, stream,
-						    &other_pad, &other_stream);
+	ret = v4l2_state_find_opposite_end(&state->routing, pad, stream,
+					   &other_pad, &other_stream);
 	if (ret)
 		return NULL;
 
-	return v4l2_subdev_state_get_stream_format(state, other_pad,
-						   other_stream);
+	return v4l2_state_get_stream_format(state, other_pad, other_stream);
 }
-EXPORT_SYMBOL_GPL(v4l2_subdev_state_get_opposite_stream_format);
+EXPORT_SYMBOL_GPL(v4l2_state_get_opposite_stream_format);
 
-u64 v4l2_subdev_state_xlate_streams(const struct v4l2_subdev_state *state,
-				    u32 pad0, u32 pad1, u64 *streams)
+int v4l2_subdev_get_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_state *state,
+			struct v4l2_subdev_format *format)
 {
-	const struct v4l2_subdev_krouting *routing = &state->routing;
-	struct v4l2_subdev_route *route;
-	u64 streams0 = 0;
-	u64 streams1 = 0;
+	struct v4l2_mbus_framefmt *fmt;
 
-	for_each_active_route(routing, route) {
-		if (route->sink_pad == pad0 && route->source_pad == pad1 &&
-		    (*streams & BIT_ULL(route->sink_stream))) {
-			streams0 |= BIT_ULL(route->sink_stream);
-			streams1 |= BIT_ULL(route->source_stream);
-		}
-		if (route->source_pad == pad0 && route->sink_pad == pad1 &&
-		    (*streams & BIT_ULL(route->source_stream))) {
-			streams0 |= BIT_ULL(route->source_stream);
-			streams1 |= BIT_ULL(route->sink_stream);
-		}
+	v4l2_subdev_lock_state(state);
+
+	fmt = v4l2_state_get_stream_format(state, format->pad, format->stream);
+	if (!fmt) {
+		v4l2_subdev_unlock_state(state);
+		return -EINVAL;
 	}
 
-	*streams = streams0;
-	return streams1;
-}
-EXPORT_SYMBOL_GPL(v4l2_subdev_state_xlate_streams);
+	format->format = *fmt;
 
-int v4l2_subdev_routing_validate(struct v4l2_subdev *sd,
-				 const struct v4l2_subdev_krouting *routing,
-				 enum v4l2_subdev_routing_restriction disallow)
+	v4l2_subdev_unlock_state(state);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(v4l2_subdev_get_fmt);
+
+int v4l2_routing_simple_verify(const struct v4l2_subdev_krouting *routing)
 {
-	u32 *remote_pads = NULL;
 	unsigned int i, j;
-	int ret = -EINVAL;
-
-	if (disallow & (V4L2_SUBDEV_ROUTING_NO_STREAM_MIX |
-			V4L2_SUBDEV_ROUTING_NO_MULTIPLEXING)) {
-		remote_pads = kcalloc(sd->entity.num_pads, sizeof(*remote_pads),
-				      GFP_KERNEL);
-		if (!remote_pads)
-			return -ENOMEM;
-
-		for (i = 0; i < sd->entity.num_pads; ++i)
-			remote_pads[i] = U32_MAX;
-	}
 
 	for (i = 0; i < routing->num_routes; ++i) {
 		const struct v4l2_subdev_route *route = &routing->routes[i];
 
-		/* Validate the sink and source pad numbers. */
-		if (route->sink_pad >= sd->entity.num_pads ||
-		    !(sd->entity.pads[route->sink_pad].flags & MEDIA_PAD_FL_SINK)) {
-			dev_dbg(sd->dev, "route %u sink (%u) is not a sink pad\n",
-				i, route->sink_pad);
-			goto out;
-		}
-
-		if (route->source_pad >= sd->entity.num_pads ||
-		    !(sd->entity.pads[route->source_pad].flags & MEDIA_PAD_FL_SOURCE)) {
-			dev_dbg(sd->dev, "route %u source (%u) is not a source pad\n",
-				i, route->source_pad);
-			goto out;
-		}
-
-		/*
-		 * V4L2_SUBDEV_ROUTING_NO_SINK_STREAM_MIX: all streams from a
-		 * sink pad must be routed to a single source pad.
-		 */
-		if (disallow & V4L2_SUBDEV_ROUTING_NO_SINK_STREAM_MIX) {
-			if (remote_pads[route->sink_pad] != U32_MAX &&
-			    remote_pads[route->sink_pad] != route->source_pad) {
-				dev_dbg(sd->dev,
-					"route %u attempts to mix %s streams\n",
-					i, "sink");
-				goto out;
-			}
-		}
-
-		/*
-		 * V4L2_SUBDEV_ROUTING_NO_SOURCE_STREAM_MIX: all streams on a
-		 * source pad must originate from a single sink pad.
-		 */
-		if (disallow & V4L2_SUBDEV_ROUTING_NO_SOURCE_STREAM_MIX) {
-			if (remote_pads[route->source_pad] != U32_MAX &&
-			    remote_pads[route->source_pad] != route->sink_pad) {
-				dev_dbg(sd->dev,
-					"route %u attempts to mix %s streams\n",
-					i, "source");
-				goto out;
-			}
-		}
-
-		/*
-		 * V4L2_SUBDEV_ROUTING_NO_SINK_MULTIPLEXING: Pads on the sink
-		 * side can not do stream multiplexing, i.e. there can be only
-		 * a single stream in a sink pad.
-		 */
-		if (disallow & V4L2_SUBDEV_ROUTING_NO_SINK_MULTIPLEXING) {
-			if (remote_pads[route->sink_pad] != U32_MAX) {
-				dev_dbg(sd->dev,
-					"route %u attempts to multiplex on %s pad %u\n",
-					i, "sink", route->sink_pad);
-				goto out;
-			}
-		}
-
-		/*
-		 * V4L2_SUBDEV_ROUTING_NO_SOURCE_MULTIPLEXING: Pads on the
-		 * source side can not do stream multiplexing, i.e. there can
-		 * be only a single stream in a source pad.
-		 */
-		if (disallow & V4L2_SUBDEV_ROUTING_NO_SOURCE_MULTIPLEXING) {
-			if (remote_pads[route->source_pad] != U32_MAX) {
-				dev_dbg(sd->dev,
-					"route %u attempts to multiplex on %s pad %u\n",
-					i, "source", route->source_pad);
-				goto out;
-			}
-		}
-
-		if (remote_pads) {
-			remote_pads[route->sink_pad] = route->source_pad;
-			remote_pads[route->source_pad] = route->sink_pad;
-		}
-
 		for (j = i + 1; j < routing->num_routes; ++j) {
 			const struct v4l2_subdev_route *r = &routing->routes[j];
 
-			/*
-			 * V4L2_SUBDEV_ROUTING_NO_1_TO_N: No two routes can
-			 * originate from the same (sink) stream.
-			 */
-			if ((disallow & V4L2_SUBDEV_ROUTING_NO_1_TO_N) &&
-			    route->sink_pad == r->sink_pad &&
-			    route->sink_stream == r->sink_stream) {
-				dev_dbg(sd->dev,
-					"routes %u and %u originate from same sink (%u/%u)\n",
-					i, j, route->sink_pad,
-					route->sink_stream);
-				goto out;
-			}
+			if (route->sink_pad == r->sink_pad &&
+			    route->sink_stream == r->sink_stream)
+				return -EINVAL;
 
-			/*
-			 * V4L2_SUBDEV_ROUTING_NO_N_TO_1: No two routes can end
-			 * at the same (source) stream.
-			 */
-			if ((disallow & V4L2_SUBDEV_ROUTING_NO_N_TO_1) &&
-			    route->source_pad == r->source_pad &&
-			    route->source_stream == r->source_stream) {
-				dev_dbg(sd->dev,
-					"routes %u and %u end at same source (%u/%u)\n",
-					i, j, route->source_pad,
-					route->source_stream);
-				goto out;
-			}
+			if (route->source_pad == r->source_pad &&
+			    route->source_stream == r->source_stream)
+				return -EINVAL;
 		}
 	}
-
-	ret = 0;
-
-out:
-	kfree(remote_pads);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(v4l2_subdev_routing_validate);
-
-static int v4l2_subdev_enable_streams_fallback(struct v4l2_subdev *sd, u32 pad,
-					       u64 streams_mask)
-{
-	struct device *dev = sd->entity.graph_obj.mdev->dev;
-	unsigned int i;
-	int ret;
-
-	/*
-	 * The subdev doesn't implement pad-based stream enable, fall back
-	 * on the .s_stream() operation. This can only be done for subdevs that
-	 * have a single source pad, as sd->enabled_streams is global to the
-	 * subdev.
-	 */
-	if (!(sd->entity.pads[pad].flags & MEDIA_PAD_FL_SOURCE))
-		return -EOPNOTSUPP;
-
-	for (i = 0; i < sd->entity.num_pads; ++i) {
-		if (i != pad && sd->entity.pads[i].flags & MEDIA_PAD_FL_SOURCE)
-			return -EOPNOTSUPP;
-	}
-
-	if (sd->enabled_streams & streams_mask) {
-		dev_dbg(dev, "set of streams %#llx already enabled on %s:%u\n",
-			streams_mask, sd->entity.name, pad);
-		return -EALREADY;
-	}
-
-	/* Start streaming when the first streams are enabled. */
-	if (!sd->enabled_streams) {
-		ret = v4l2_subdev_call(sd, video, s_stream, 1);
-		if (ret)
-			return ret;
-	}
-
-	sd->enabled_streams |= streams_mask;
 
 	return 0;
 }
-
-int v4l2_subdev_enable_streams(struct v4l2_subdev *sd, u32 pad,
-			       u64 streams_mask)
-{
-	struct device *dev = sd->entity.graph_obj.mdev->dev;
-	struct v4l2_subdev_state *state;
-	u64 found_streams = 0;
-	unsigned int i;
-	int ret;
-
-	/* A few basic sanity checks first. */
-	if (pad >= sd->entity.num_pads)
-		return -EINVAL;
-
-	if (!streams_mask)
-		return 0;
-
-	/* Fallback on .s_stream() if .enable_streams() isn't available. */
-	if (!sd->ops->pad || !sd->ops->pad->enable_streams)
-		return v4l2_subdev_enable_streams_fallback(sd, pad,
-							   streams_mask);
-
-	state = v4l2_subdev_lock_and_get_active_state(sd);
-
-	/*
-	 * Verify that the requested streams exist and that they are not
-	 * already enabled.
-	 */
-	for (i = 0; i < state->stream_configs.num_configs; ++i) {
-		struct v4l2_subdev_stream_config *cfg =
-			&state->stream_configs.configs[i];
-
-		if (cfg->pad != pad || !(streams_mask & BIT_ULL(cfg->stream)))
-			continue;
-
-		found_streams |= BIT_ULL(cfg->stream);
-
-		if (cfg->enabled) {
-			dev_dbg(dev, "stream %u already enabled on %s:%u\n",
-				cfg->stream, sd->entity.name, pad);
-			ret = -EALREADY;
-			goto done;
-		}
-	}
-
-	if (found_streams != streams_mask) {
-		dev_dbg(dev, "streams 0x%llx not found on %s:%u\n",
-			streams_mask & ~found_streams, sd->entity.name, pad);
-		ret = -EINVAL;
-		goto done;
-	}
-
-	/* Call the .enable_streams() operation. */
-	ret = v4l2_subdev_call(sd, pad, enable_streams, state, pad,
-			       streams_mask);
-	if (ret)
-		goto done;
-
-	/* Mark the streams as enabled. */
-	for (i = 0; i < state->stream_configs.num_configs; ++i) {
-		struct v4l2_subdev_stream_config *cfg =
-			&state->stream_configs.configs[i];
-
-		if (cfg->pad == pad && (streams_mask & BIT_ULL(cfg->stream)))
-			cfg->enabled = true;
-	}
-
-done:
-	v4l2_subdev_unlock_state(state);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(v4l2_subdev_enable_streams);
-
-static int v4l2_subdev_disable_streams_fallback(struct v4l2_subdev *sd, u32 pad,
-						u64 streams_mask)
-{
-	struct device *dev = sd->entity.graph_obj.mdev->dev;
-	unsigned int i;
-	int ret;
-
-	/*
-	 * If the subdev doesn't implement pad-based stream enable, fall  back
-	 * on the .s_stream() operation. This can only be done for subdevs that
-	 * have a single source pad, as sd->enabled_streams is global to the
-	 * subdev.
-	 */
-	if (!(sd->entity.pads[pad].flags & MEDIA_PAD_FL_SOURCE))
-		return -EOPNOTSUPP;
-
-	for (i = 0; i < sd->entity.num_pads; ++i) {
-		if (i != pad && sd->entity.pads[i].flags & MEDIA_PAD_FL_SOURCE)
-			return -EOPNOTSUPP;
-	}
-
-	if ((sd->enabled_streams & streams_mask) != streams_mask) {
-		dev_dbg(dev, "set of streams %#llx already disabled on %s:%u\n",
-			streams_mask, sd->entity.name, pad);
-		return -EALREADY;
-	}
-
-	/* Stop streaming when the last streams are disabled. */
-	if (!(sd->enabled_streams & ~streams_mask)) {
-		ret = v4l2_subdev_call(sd, video, s_stream, 0);
-		if (ret)
-			return ret;
-	}
-
-	sd->enabled_streams &= ~streams_mask;
-
-	return 0;
-}
-
-int v4l2_subdev_disable_streams(struct v4l2_subdev *sd, u32 pad,
-				u64 streams_mask)
-{
-	struct device *dev = sd->entity.graph_obj.mdev->dev;
-	struct v4l2_subdev_state *state;
-	u64 found_streams = 0;
-	unsigned int i;
-	int ret;
-
-	/* A few basic sanity checks first. */
-	if (pad >= sd->entity.num_pads)
-		return -EINVAL;
-
-	if (!streams_mask)
-		return 0;
-
-	/* Fallback on .s_stream() if .disable_streams() isn't available. */
-	if (!sd->ops->pad || !sd->ops->pad->disable_streams)
-		return v4l2_subdev_disable_streams_fallback(sd, pad,
-							    streams_mask);
-
-	state = v4l2_subdev_lock_and_get_active_state(sd);
-
-	/*
-	 * Verify that the requested streams exist and that they are not
-	 * already disabled.
-	 */
-	for (i = 0; i < state->stream_configs.num_configs; ++i) {
-		struct v4l2_subdev_stream_config *cfg =
-			&state->stream_configs.configs[i];
-
-		if (cfg->pad != pad || !(streams_mask & BIT_ULL(cfg->stream)))
-			continue;
-
-		found_streams |= BIT_ULL(cfg->stream);
-
-		if (!cfg->enabled) {
-			dev_dbg(dev, "stream %u already disabled on %s:%u\n",
-				cfg->stream, sd->entity.name, pad);
-			ret = -EALREADY;
-			goto done;
-		}
-	}
-
-	if (found_streams != streams_mask) {
-		dev_dbg(dev, "streams 0x%llx not found on %s:%u\n",
-			streams_mask & ~found_streams, sd->entity.name, pad);
-		ret = -EINVAL;
-		goto done;
-	}
-
-	/* Call the .disable_streams() operation. */
-	ret = v4l2_subdev_call(sd, pad, disable_streams, state, pad,
-			       streams_mask);
-	if (ret)
-		goto done;
-
-	/* Mark the streams as disabled. */
-	for (i = 0; i < state->stream_configs.num_configs; ++i) {
-		struct v4l2_subdev_stream_config *cfg =
-			&state->stream_configs.configs[i];
-
-		if (cfg->pad == pad && (streams_mask & BIT_ULL(cfg->stream)))
-			cfg->enabled = false;
-	}
-
-done:
-	v4l2_subdev_unlock_state(state);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(v4l2_subdev_disable_streams);
-
-int v4l2_subdev_s_stream_helper(struct v4l2_subdev *sd, int enable)
-{
-	struct v4l2_subdev_state *state;
-	struct v4l2_subdev_route *route;
-	struct media_pad *pad;
-	u64 source_mask = 0;
-	int pad_index = -1;
-
-	/*
-	 * Find the source pad. This helper is meant for subdevs that have a
-	 * single source pad, so failures shouldn't happen, but catch them
-	 * loudly nonetheless as they indicate a driver bug.
-	 */
-	media_entity_for_each_pad(&sd->entity, pad) {
-		if (pad->flags & MEDIA_PAD_FL_SOURCE) {
-			pad_index = pad->index;
-			break;
-		}
-	}
-
-	if (WARN_ON(pad_index == -1))
-		return -EINVAL;
-
-	/*
-	 * As there's a single source pad, just collect all the source streams.
-	 */
-	state = v4l2_subdev_lock_and_get_active_state(sd);
-
-	for_each_active_route(&state->routing, route)
-		source_mask |= BIT_ULL(route->source_stream);
-
-	v4l2_subdev_unlock_state(state);
-
-	if (enable)
-		return v4l2_subdev_enable_streams(sd, pad_index, source_mask);
-	else
-		return v4l2_subdev_disable_streams(sd, pad_index, source_mask);
-}
-EXPORT_SYMBOL_GPL(v4l2_subdev_s_stream_helper);
-
-#endif /* CONFIG_VIDEO_V4L2_SUBDEV_API */
-
-#endif /* CONFIG_MEDIA_CONTROLLER */
-
-void v4l2_subdev_init(struct v4l2_subdev *sd, const struct v4l2_subdev_ops *ops)
-{
-	INIT_LIST_HEAD(&sd->list);
-	BUG_ON(!ops);
-	sd->ops = ops;
-	sd->v4l2_dev = NULL;
-	sd->flags = 0;
-	sd->name[0] = '\0';
-	sd->grp_id = 0;
-	sd->dev_priv = NULL;
-	sd->host_priv = NULL;
-	sd->privacy_led = NULL;
-#if defined(CONFIG_MEDIA_CONTROLLER)
-	sd->entity.name = sd->name;
-	sd->entity.obj_type = MEDIA_ENTITY_TYPE_V4L2_SUBDEV;
-	sd->entity.function = MEDIA_ENT_F_V4L2_SUBDEV_UNKNOWN;
-#endif
-}
-EXPORT_SYMBOL(v4l2_subdev_init);
-
-void v4l2_subdev_notify_event(struct v4l2_subdev *sd,
-			      const struct v4l2_event *ev)
-{
-	v4l2_event_queue(sd->devnode, ev);
-	v4l2_subdev_notify(sd, V4L2_DEVICE_NOTIFY_EVENT, (void *)ev);
-}
-EXPORT_SYMBOL_GPL(v4l2_subdev_notify_event);
-
-int v4l2_subdev_get_privacy_led(struct v4l2_subdev *sd)
-{
-#if IS_REACHABLE(CONFIG_LEDS_CLASS)
-	sd->privacy_led = led_get(sd->dev, "privacy-led");
-	if (IS_ERR(sd->privacy_led) && PTR_ERR(sd->privacy_led) != -ENOENT)
-		return dev_err_probe(sd->dev, PTR_ERR(sd->privacy_led),
-				     "getting privacy LED\n");
-
-	if (!IS_ERR_OR_NULL(sd->privacy_led)) {
-		mutex_lock(&sd->privacy_led->led_access);
-		led_sysfs_disable(sd->privacy_led);
-		led_trigger_remove(sd->privacy_led);
-		led_set_brightness(sd->privacy_led, 0);
-		mutex_unlock(&sd->privacy_led->led_access);
-	}
-#endif
-	return 0;
-}
-EXPORT_SYMBOL_GPL(v4l2_subdev_get_privacy_led);
-
-void v4l2_subdev_put_privacy_led(struct v4l2_subdev *sd)
-{
-#if IS_REACHABLE(CONFIG_LEDS_CLASS)
-	if (!IS_ERR_OR_NULL(sd->privacy_led)) {
-		mutex_lock(&sd->privacy_led->led_access);
-		led_sysfs_enable(sd->privacy_led);
-		mutex_unlock(&sd->privacy_led->led_access);
-		led_put(sd->privacy_led);
-	}
-#endif
-}
-EXPORT_SYMBOL_GPL(v4l2_subdev_put_privacy_led);
+EXPORT_SYMBOL_GPL(v4l2_routing_simple_verify);

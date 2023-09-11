@@ -4,16 +4,19 @@
 $id: http://devicetree.org/schemas/phy/cdns,dphy.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Cadence DPHY
+title: Cadence DPHY Device Tree Bindings
 
 maintainers:
-  - Pratyush Yadav <pratyush@kernel.org>
+  - Pratyush Yadav <p.yadav@ti.com>
 
 properties:
   compatible:
-    enum:
-      - cdns,dphy
-      - ti,j721e-dphy
+    oneOf:
+      - items:
+          - enum:
+              - ti,j721e-dphy
+          - const: cdns,dphy
+      - const: cdns,dphy
 
   reg:
     maxItems: 1
@@ -37,8 +40,6 @@ properties:
 required:
   - compatible
   - reg
-  - clocks
-  - clock-names
   - "#phy-cells"
 
 additionalProperties: false

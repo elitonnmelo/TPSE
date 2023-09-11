@@ -45,7 +45,7 @@
 
 #define CAL_CAMERARX_PAD_SINK		0
 #define CAL_CAMERARX_PAD_FIRST_SOURCE	1
-#define CAL_CAMERARX_NUM_SOURCE_PADS	1
+#define CAL_CAMERARX_NUM_SOURCE_PADS	8
 #define CAL_CAMERARX_NUM_PADS		(1 + CAL_CAMERARX_NUM_SOURCE_PADS)
 
 static inline bool cal_rx_pad_is_sink(u32 pad)
@@ -174,20 +174,21 @@ struct cal_camerarx {
 	struct device_node	*source_ep_node;
 	struct device_node	*source_node;
 	struct v4l2_subdev	*source;
+	struct media_pipeline	pipe;
 
 	struct v4l2_subdev	subdev;
 	struct media_pad	pads[CAL_CAMERARX_NUM_PADS];
-	struct v4l2_mbus_framefmt	formats[CAL_CAMERARX_NUM_PADS];
 
 	/* protects the vc_* fields below */
 	spinlock_t		vc_lock;
 	u8			vc_enable_count[4];
-	u16			vc_frame_number[4];
+	u8			vc_frame_number[4];
 	u32			vc_sequence[4];
 
 	/*
 	 * Lock for camerarx ops. Protects:
-	 * - formats
+	 * - routing
+	 * - stream_configs
 	 * - enable_count
 	 */
 	struct mutex		mutex;
@@ -254,6 +255,7 @@ struct cal_ctx {
 	u8			pix_proc;
 	u8			vc;
 	u8			datatype;
+	u32			stream;
 
 	bool			use_pix_proc;
 };
@@ -329,6 +331,7 @@ void cal_quickdump_regs(struct cal_dev *cal);
 
 int cal_camerarx_get_remote_frame_desc(struct cal_camerarx *phy,
 				       struct v4l2_mbus_frame_desc *desc);
+struct cal_camerarx *cal_camerarx_get_phy_from_entity(struct media_entity *entity);
 void cal_camerarx_disable(struct cal_camerarx *phy);
 void cal_camerarx_i913_errata(struct cal_camerarx *phy);
 struct cal_camerarx *cal_camerarx_create(struct cal_dev *cal,

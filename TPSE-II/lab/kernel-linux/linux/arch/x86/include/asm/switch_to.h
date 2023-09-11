@@ -66,22 +66,30 @@ static inline void update_task_stack(struct task_struct *task)
 {
 	/* sp0 always points to the entry trampoline stack, which is constant: */
 #ifdef CONFIG_X86_32
-	this_cpu_write(cpu_tss_rw.x86_tss.sp1, task->thread.sp0);
+	if (static_cpu_has(X86_FEATURE_XENPV))
+		load_sp0(task->thread.sp0);
+	else
+		this_cpu_write(cpu_tss_rw.x86_tss.sp1, task->thread.sp0);
 #else
-	/* Xen PV enters the kernel on the thread stack. */
-	if (cpu_feature_enabled(X86_FEATURE_XENPV))
+	/*
+	 * x86-64 updates x86_tss.sp1 via cpu_current_top_of_stack. That
+	 * doesn't work on x86-32 because sp1 and
+	 * cpu_current_top_of_stack have different values (because of
+	 * the non-zero stack-padding on 32bit).
+	 */
+	if (static_cpu_has(X86_FEATURE_XENPV))
 		load_sp0(task_top_of_stack(task));
 #endif
 }
 
 static inline void kthread_frame_init(struct inactive_task_frame *frame,
-				      int (*fun)(void *), void *arg)
+				      unsigned long fun, unsigned long arg)
 {
-	frame->bx = (unsigned long)fun;
+	frame->bx = fun;
 #ifdef CONFIG_X86_32
-	frame->di = (unsigned long)arg;
+	frame->di = arg;
 #else
-	frame->r12 = (unsigned long)arg;
+	frame->r12 = arg;
 #endif
 }
 

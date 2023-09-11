@@ -6,7 +6,6 @@
  */
 
 #include <linux/linkage.h>
-#include <linux/cfi_types.h>
 #include <asm/assembler.h>
 
 	SHASH		.req	v0
@@ -351,11 +350,11 @@ CPU_LE(	rev64		T1.16b, T1.16b	)
 	 * void pmull_ghash_update(int blocks, u64 dg[], const char *src,
 	 *			   struct ghash_key const *k, const char *head)
 	 */
-SYM_TYPED_FUNC_START(pmull_ghash_update_p64)
+SYM_FUNC_START(pmull_ghash_update_p64)
 	__pmull_ghash	p64
 SYM_FUNC_END(pmull_ghash_update_p64)
 
-SYM_TYPED_FUNC_START(pmull_ghash_update_p8)
+SYM_FUNC_START(pmull_ghash_update_p8)
 	__pmull_ghash	p8
 SYM_FUNC_END(pmull_ghash_update_p8)
 
@@ -436,7 +435,9 @@ SYM_FUNC_END(pmull_ghash_update_p8)
 
 	.align		6
 	.macro		pmull_gcm_do_crypt, enc
-	frame_push	1
+	stp		x29, x30, [sp, #-32]!
+	mov		x29, sp
+	str		x19, [sp, #24]
 
 	load_round_keys	x7, x6, x8
 
@@ -527,7 +528,7 @@ CPU_LE(	rev		w8, w8		)
 	.endif
 	bne		0b
 
-3:	ldr		x10, [sp, #.Lframe_local_offset]
+3:	ldp		x19, x10, [sp, #24]
 	cbz		x10, 5f				// output tag?
 
 	ld1		{INP3.16b}, [x10]		// load lengths[]
@@ -543,24 +544,9 @@ CPU_LE(	rev		w8, w8		)
 	ext		XL.16b, XL.16b, XL.16b, #8
 	rev64		XL.16b, XL.16b
 	eor		XL.16b, XL.16b, KS0.16b
-
-	.if		\enc == 1
 	st1		{XL.16b}, [x10]			// store tag
-	.else
-	ldp		x11, x12, [sp, #40]		// load tag pointer and authsize
-	adr_l		x17, .Lpermute_table
-	ld1		{KS0.16b}, [x11]		// load supplied tag
-	add		x17, x17, x12
-	ld1		{KS1.16b}, [x17]		// load permute vector
 
-	cmeq		XL.16b, XL.16b, KS0.16b		// compare tags
-	mvn		XL.16b, XL.16b			// -1 for fail, 0 for pass
-	tbl		XL.16b, {XL.16b}, KS1.16b	// keep authsize bytes only
-	sminv		b0, XL.16b			// signed minimum across XL
-	smov		w0, v0.b[0]			// return b0
-	.endif
-
-4:	frame_pop
+4:	ldp		x29, x30, [sp], #32
 	ret
 
 5:

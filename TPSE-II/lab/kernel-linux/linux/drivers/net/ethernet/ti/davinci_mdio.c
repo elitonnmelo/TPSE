@@ -84,7 +84,7 @@ struct davinci_mdio_regs {
 #define USERACCESS_DATA		(0xffff)
 
 		u32	physel;
-	}	user[];
+	}	user[0];
 };
 
 static const struct mdio_platform_data default_pdata = {
@@ -107,6 +107,10 @@ struct davinci_mdio_data {
 	u32		clk_div;
 	bool		manual_mode;
 };
+
+#if IS_ENABLED(CONFIG_OF)
+static void davinci_mdio_update_dt_from_phymask(u32 phy_mask);
+#endif
 
 static void davinci_mdio_init_clk(struct davinci_mdio_data *data)
 {
@@ -225,15 +229,17 @@ static int davinci_get_mdio_data(struct mdiobb_ctrl *ctrl)
 	return test_bit(MDIO_PIN, &reg);
 }
 
-static int davinci_mdiobb_read_c22(struct mii_bus *bus, int phy, int reg)
+static int davinci_mdiobb_read(struct mii_bus *bus, int phy, int reg)
 {
 	int ret;
 
-	ret = pm_runtime_resume_and_get(bus->parent);
-	if (ret < 0)
+	ret = pm_runtime_get_sync(bus->parent);
+	if (ret < 0) {
+		pm_runtime_put_noidle(bus->parent);
 		return ret;
+	}
 
-	ret = mdiobb_read_c22(bus, phy, reg);
+	ret = mdiobb_read(bus, phy, reg);
 
 	pm_runtime_mark_last_busy(bus->parent);
 	pm_runtime_put_autosuspend(bus->parent);
@@ -241,50 +247,18 @@ static int davinci_mdiobb_read_c22(struct mii_bus *bus, int phy, int reg)
 	return ret;
 }
 
-static int davinci_mdiobb_write_c22(struct mii_bus *bus, int phy, int reg,
-				    u16 val)
+static int davinci_mdiobb_write(struct mii_bus *bus, int phy, int reg,
+				u16 val)
 {
 	int ret;
 
-	ret = pm_runtime_resume_and_get(bus->parent);
-	if (ret < 0)
+	ret = pm_runtime_get_sync(bus->parent);
+	if (ret < 0) {
+		pm_runtime_put_noidle(bus->parent);
 		return ret;
+	}
 
-	ret = mdiobb_write_c22(bus, phy, reg, val);
-
-	pm_runtime_mark_last_busy(bus->parent);
-	pm_runtime_put_autosuspend(bus->parent);
-
-	return ret;
-}
-
-static int davinci_mdiobb_read_c45(struct mii_bus *bus, int phy, int devad,
-				   int reg)
-{
-	int ret;
-
-	ret = pm_runtime_resume_and_get(bus->parent);
-	if (ret < 0)
-		return ret;
-
-	ret = mdiobb_read_c45(bus, phy, devad, reg);
-
-	pm_runtime_mark_last_busy(bus->parent);
-	pm_runtime_put_autosuspend(bus->parent);
-
-	return ret;
-}
-
-static int davinci_mdiobb_write_c45(struct mii_bus *bus, int phy, int devad,
-				    int reg, u16 val)
-{
-	int ret;
-
-	ret = pm_runtime_resume_and_get(bus->parent);
-	if (ret < 0)
-		return ret;
-
-	ret = mdiobb_write_c45(bus, phy, devad, reg, val);
+	ret = mdiobb_write(bus, phy, reg, val);
 
 	pm_runtime_mark_last_busy(bus->parent);
 	pm_runtime_put_autosuspend(bus->parent);
@@ -297,9 +271,11 @@ static int davinci_mdio_common_reset(struct davinci_mdio_data *data)
 	u32 phy_mask, ver;
 	int ret;
 
-	ret = pm_runtime_resume_and_get(data->dev);
-	if (ret < 0)
+	ret = pm_runtime_get_sync(data->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(data->dev);
 		return ret;
+	}
 
 	if (data->manual_mode) {
 		davinci_mdio_disable(data);
@@ -325,6 +301,12 @@ static int davinci_mdio_common_reset(struct davinci_mdio_data *data)
 		/* restrict mdio bus to live phys only */
 		dev_info(data->dev, "detected phy mask %x\n", ~phy_mask);
 		phy_mask = ~phy_mask;
+
+		#if IS_ENABLED(CONFIG_OF)
+		if (of_machine_is_compatible("ti,am335x-bone"))
+			davinci_mdio_update_dt_from_phymask(phy_mask);
+		#endif
+
 	} else {
 		/* desperately scan all phys */
 		dev_warn(data->dev, "no live phy, scanning all\n");
@@ -415,9 +397,11 @@ static int davinci_mdio_read(struct mii_bus *bus, int phy_id, int phy_reg)
 	if (phy_reg & ~PHY_REG_MASK || phy_id & ~PHY_ID_MASK)
 		return -EINVAL;
 
-	ret = pm_runtime_resume_and_get(data->dev);
-	if (ret < 0)
+	ret = pm_runtime_get_sync(data->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(data->dev);
 		return ret;
+	}
 
 	reg = (USERACCESS_GO | USERACCESS_READ | (phy_reg << 21) |
 	       (phy_id << 16));
@@ -457,9 +441,11 @@ static int davinci_mdio_write(struct mii_bus *bus, int phy_id,
 	if (phy_reg & ~PHY_REG_MASK || phy_id & ~PHY_ID_MASK)
 		return -EINVAL;
 
-	ret = pm_runtime_resume_and_get(data->dev);
-	if (ret < 0)
+	ret = pm_runtime_get_sync(data->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(data->dev);
 		return ret;
+	}
 
 	reg = (USERACCESS_GO | USERACCESS_WRITE | (phy_reg << 21) |
 		   (phy_id << 16) | (phy_data & USERACCESS_DATA));
@@ -607,10 +593,8 @@ static int davinci_mdio_probe(struct platform_device *pdev)
 	data->bus->name		= dev_name(dev);
 
 	if (data->manual_mode) {
-		data->bus->read		= davinci_mdiobb_read_c22;
-		data->bus->write	= davinci_mdiobb_write_c22;
-		data->bus->read_c45	= davinci_mdiobb_read_c45;
-		data->bus->write_c45	= davinci_mdiobb_write_c45;
+		data->bus->read		= davinci_mdiobb_read;
+		data->bus->write	= davinci_mdiobb_write;
 		data->bus->reset	= davinci_mdiobb_reset;
 
 		dev_info(dev, "Configuring MDIO in manual mode\n");
@@ -721,6 +705,94 @@ static int davinci_mdio_runtime_resume(struct device *dev)
 	return 0;
 }
 #endif
+
+static void davinci_mdio_update_dt_from_phymask(u32 phy_mask)
+{
+	int i, len, skip;
+	u32 addr;
+	__be32 *old_phy_p, *phy_id_p;
+	struct property *phy_id_property = NULL;
+	struct device_node *node_p, *slave_p;
+
+	addr = 0;
+
+	for (i = 0; i < PHY_MAX_ADDR; i++) {
+		if ((phy_mask & (1 << i)) == 0) {
+			addr = (u32) i;
+		break;
+		}
+	}
+
+	for_each_compatible_node(node_p, NULL, "ti,cpsw") {
+		for_each_node_by_name(slave_p, "slave") {
+
+#if IS_ENABLED(CONFIG_OF_OVERLAY)
+			skip = 1;
+			// Hack, the overlay fixup "slave" doesn't have phy-mode...
+			old_phy_p = (__be32 *) of_get_property(slave_p, "phy-mode", &len);
+
+			if (len != (sizeof(__be32 *) * 1))
+			{
+				skip = 0;
+			}
+
+			if (skip) {
+#endif
+
+			old_phy_p = (__be32 *) of_get_property(slave_p, "phy_id", &len);
+
+			if (len != (sizeof(__be32 *) * 2))
+				goto err_out;
+
+			if (old_phy_p) {
+
+				phy_id_property = kzalloc(sizeof(*phy_id_property), GFP_KERNEL);
+
+				if (! phy_id_property)
+					goto err_out;
+
+				phy_id_property->length = len;
+				phy_id_property->name = kstrdup("phy_id", GFP_KERNEL);
+				phy_id_property->value = kzalloc(len, GFP_KERNEL);
+
+				if (! phy_id_property->name)
+					goto err_out;
+
+				if (! phy_id_property->value)
+					goto err_out;
+
+				memcpy(phy_id_property->value, old_phy_p, len);
+
+				phy_id_p = (__be32 *) phy_id_property->value + 1;
+
+				*phy_id_p = cpu_to_be32(addr);
+
+				of_update_property(slave_p, phy_id_property);
+				pr_info("davinci_mdio: dt: updated phy_id[%d] from phy_mask[%x]\n", addr, phy_mask);
+
+				++addr;
+			}
+#if IS_ENABLED(CONFIG_OF_OVERLAY)
+		}
+#endif
+		}
+	}
+
+	return;
+
+err_out:
+
+	if (phy_id_property) {
+		if (phy_id_property->name)
+			kfree(phy_id_property->name);
+
+	if (phy_id_property->value)
+		kfree(phy_id_property->value);
+
+	if (phy_id_property)
+		kfree(phy_id_property);
+	}
+}
 
 #ifdef CONFIG_PM_SLEEP
 static int davinci_mdio_suspend(struct device *dev)

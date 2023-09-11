@@ -353,6 +353,8 @@ static unsigned long dispc_plane_pclk_rate(struct dispc_device *dispc,
 static unsigned long dispc_plane_lclk_rate(struct dispc_device *dispc,
 					   enum omap_plane_id plane);
 
+static void dispc_clear_irqstatus(struct dispc_device *dispc, u32 mask);
+
 static inline void dispc_write_reg(struct dispc_device *dispc, u16 idx, u32 val)
 {
 	__raw_writel(val, dispc->base + idx);
@@ -379,12 +381,12 @@ static void mgr_fld_write(struct dispc_device *dispc, enum omap_channel channel,
 	REG_FLD_MOD(dispc, rfld->reg, val, rfld->high, rfld->low);
 }
 
-int dispc_get_num_ovls(struct dispc_device *dispc)
+static int dispc_get_num_ovls(struct dispc_device *dispc)
 {
 	return dispc->feat->num_ovls;
 }
 
-int dispc_get_num_mgrs(struct dispc_device *dispc)
+static int dispc_get_num_mgrs(struct dispc_device *dispc)
 {
 	return dispc->feat->num_mgrs;
 }
@@ -653,11 +655,8 @@ int dispc_runtime_get(struct dispc_device *dispc)
 	DSSDBG("dispc_runtime_get\n");
 
 	r = pm_runtime_get_sync(&dispc->pdev->dev);
-	if (WARN_ON(r < 0)) {
-		pm_runtime_put_noidle(&dispc->pdev->dev);
-		return r;
-	}
-	return 0;
+	WARN_ON(r < 0);
+	return r < 0 ? r : 0;
 }
 
 void dispc_runtime_put(struct dispc_device *dispc)
@@ -670,13 +669,13 @@ void dispc_runtime_put(struct dispc_device *dispc)
 	WARN_ON(r < 0 && r != -ENOSYS);
 }
 
-u32 dispc_mgr_get_vsync_irq(struct dispc_device *dispc,
+static u32 dispc_mgr_get_vsync_irq(struct dispc_device *dispc,
 				   enum omap_channel channel)
 {
 	return mgr_desc[channel].vsync_irq;
 }
 
-u32 dispc_mgr_get_framedone_irq(struct dispc_device *dispc,
+static u32 dispc_mgr_get_framedone_irq(struct dispc_device *dispc,
 				       enum omap_channel channel)
 {
 	if (channel == OMAP_DSS_CHANNEL_DIGIT && dispc->feat->no_framedone_tv)
@@ -685,18 +684,18 @@ u32 dispc_mgr_get_framedone_irq(struct dispc_device *dispc,
 	return mgr_desc[channel].framedone_irq;
 }
 
-u32 dispc_mgr_get_sync_lost_irq(struct dispc_device *dispc,
+static u32 dispc_mgr_get_sync_lost_irq(struct dispc_device *dispc,
 				       enum omap_channel channel)
 {
 	return mgr_desc[channel].sync_lost_irq;
 }
 
-u32 dispc_wb_get_framedone_irq(struct dispc_device *dispc)
+static u32 dispc_wb_get_framedone_irq(struct dispc_device *dispc)
 {
 	return DISPC_IRQ_FRAMEDONEWB;
 }
 
-void dispc_mgr_enable(struct dispc_device *dispc,
+static void dispc_mgr_enable(struct dispc_device *dispc,
 			     enum omap_channel channel, bool enable)
 {
 	mgr_fld_write(dispc, channel, DISPC_MGR_FLD_ENABLE, enable);
@@ -710,13 +709,13 @@ static bool dispc_mgr_is_enabled(struct dispc_device *dispc,
 	return !!mgr_fld_read(dispc, channel, DISPC_MGR_FLD_ENABLE);
 }
 
-bool dispc_mgr_go_busy(struct dispc_device *dispc,
+static bool dispc_mgr_go_busy(struct dispc_device *dispc,
 			      enum omap_channel channel)
 {
 	return mgr_fld_read(dispc, channel, DISPC_MGR_FLD_GO) == 1;
 }
 
-void dispc_mgr_go(struct dispc_device *dispc, enum omap_channel channel)
+static void dispc_mgr_go(struct dispc_device *dispc, enum omap_channel channel)
 {
 	WARN_ON(!dispc_mgr_is_enabled(dispc, channel));
 	WARN_ON(dispc_mgr_go_busy(dispc, channel));
@@ -726,12 +725,12 @@ void dispc_mgr_go(struct dispc_device *dispc, enum omap_channel channel)
 	mgr_fld_write(dispc, channel, DISPC_MGR_FLD_GO, 1);
 }
 
-bool dispc_wb_go_busy(struct dispc_device *dispc)
+static bool dispc_wb_go_busy(struct dispc_device *dispc)
 {
 	return REG_GET(dispc, DISPC_CONTROL2, 6, 6) == 1;
 }
 
-void dispc_wb_go(struct dispc_device *dispc)
+static void dispc_wb_go(struct dispc_device *dispc)
 {
 	enum omap_plane_id plane = OMAP_DSS_WB;
 	bool enable, go;
@@ -855,6 +854,11 @@ struct csc_coef_yuv2rgb {
 	bool full_range;
 };
 
+struct csc_coef_rgb2yuv {
+	int yr, yg, yb, cbr, cbg, cbb, crr, crg, crb;
+	bool full_range;
+};
+
 static void dispc_ovl_write_color_conv_coef(struct dispc_device *dispc,
 					    enum omap_plane_id plane,
 					    const struct csc_coef_yuv2rgb *ct)
@@ -866,6 +870,24 @@ static void dispc_ovl_write_color_conv_coef(struct dispc_device *dispc,
 	dispc_write_reg(dispc, DISPC_OVL_CONV_COEF(plane, 2), CVAL(ct->gcb, ct->gcr));
 	dispc_write_reg(dispc, DISPC_OVL_CONV_COEF(plane, 3), CVAL(ct->bcr, ct->by));
 	dispc_write_reg(dispc, DISPC_OVL_CONV_COEF(plane, 4), CVAL(0, ct->bcb));
+
+	REG_FLD_MOD(dispc, DISPC_OVL_ATTRIBUTES(plane), ct->full_range, 11, 11);
+
+#undef CVAL
+}
+
+static void dispc_wb_write_color_conv_coef(struct dispc_device *dispc,
+					   const struct csc_coef_rgb2yuv *ct)
+{
+	const enum omap_plane_id plane = OMAP_DSS_WB;
+
+#define CVAL(x, y) (FLD_VAL(x, 26, 16) | FLD_VAL(y, 10, 0))
+
+	dispc_write_reg(dispc, DISPC_OVL_CONV_COEF(plane, 0), CVAL(ct->yg,  ct->yr));
+	dispc_write_reg(dispc, DISPC_OVL_CONV_COEF(plane, 1), CVAL(ct->crr, ct->yb));
+	dispc_write_reg(dispc, DISPC_OVL_CONV_COEF(plane, 2), CVAL(ct->crb, ct->crg));
+	dispc_write_reg(dispc, DISPC_OVL_CONV_COEF(plane, 3), CVAL(ct->cbg, ct->cbr));
+	dispc_write_reg(dispc, DISPC_OVL_CONV_COEF(plane, 4), CVAL(0, ct->cbb));
 
 	REG_FLD_MOD(dispc, DISPC_OVL_ATTRIBUTES(plane), ct->full_range, 11, 11);
 
@@ -904,15 +926,38 @@ static const struct csc_coef_yuv2rgb coefs_yuv2rgb_bt709_lim = {
 	false,			/* limited range */
 };
 
-static void dispc_ovl_set_csc(struct dispc_device *dispc,
-			      enum omap_plane_id plane,
-			      enum drm_color_encoding color_encoding,
-			      enum drm_color_range color_range)
+/* RGB -> YUV, ITU-R BT.601, limited range */
+static const struct csc_coef_rgb2yuv coefs_rgb2yuv_bt601_lim = {
+	 66, 129,  25,		/* yr,   yg,  yb | 0.257  0.504  0.098|*/
+	-38, -74, 112,		/* cbr, cbg, cbb |-0.148 -0.291  0.439|*/
+	112, -94, -18,		/* crr, crg, crb | 0.439 -0.368 -0.071|*/
+	false,			/* limited range */
+};
+
+/* RGB -> YUV, ITU-R BT.601, full range */
+static const struct csc_coef_rgb2yuv coefs_rgb2yuv_bt601_full = {
+	 77,  150,  29,		/* yr,   yg,  yb | 0.299  0.587  0.114|*/
+	-43,  -85, 128,		/* cbr, cbg, cbb |-0.173 -0.339  0.511|*/
+	128, -107, -21,		/* crr, crg, crb | 0.511 -0.428 -0.083|*/
+	true,			/* full range */
+};
+
+/* RGB -> YUV, ITU-R BT.709, limited range */
+static const struct csc_coef_rgb2yuv coefs_rgb2yuv_bt701_lim = {
+	 47,  157,   16,	/* yr,   yg,  yb | 0.1826  0.6142  0.0620|*/
+	-26,  -87,  112,	/* cbr, cbg, cbb |-0.1006 -0.3386  0.4392|*/
+	112, -102,  -10,	/* crr, crg, crb | 0.4392 -0.3989 -0.0403|*/
+	false,			/* limited range */
+};
+
+static int dispc_ovl_set_csc(struct dispc_device *dispc,
+			     enum omap_plane_id plane,
+			     enum drm_color_encoding color_encoding,
+			     enum drm_color_range color_range)
 {
 	const struct csc_coef_yuv2rgb *csc;
 
 	switch (color_encoding) {
-	default:
 	case DRM_COLOR_YCBCR_BT601:
 		if (color_range == DRM_COLOR_YCBCR_FULL_RANGE)
 			csc = &coefs_yuv2rgb_bt601_full;
@@ -925,9 +970,15 @@ static void dispc_ovl_set_csc(struct dispc_device *dispc,
 		else
 			csc = &coefs_yuv2rgb_bt709_lim;
 		break;
+	default:
+		DSSERR("Unsupported CSC mode %d for plane %d\n",
+		       color_encoding, plane);
+		return -EINVAL;
 	}
 
 	dispc_ovl_write_color_conv_coef(dispc, plane, csc);
+
+	return 0;
 }
 
 static void dispc_ovl_set_ba0(struct dispc_device *dispc,
@@ -1276,8 +1327,8 @@ static u32 dispc_ovl_get_burst_size(struct dispc_device *dispc,
 	return dispc->feat->burst_size_unit * 8;
 }
 
-bool dispc_ovl_color_mode_supported(struct dispc_device *dispc,
-				    enum omap_plane_id plane, u32 fourcc)
+static bool dispc_ovl_color_mode_supported(struct dispc_device *dispc,
+					   enum omap_plane_id plane, u32 fourcc)
 {
 	const u32 *modes;
 	unsigned int i;
@@ -1292,7 +1343,7 @@ bool dispc_ovl_color_mode_supported(struct dispc_device *dispc,
 	return false;
 }
 
-const u32 *dispc_ovl_get_color_modes(struct dispc_device *dispc,
+static const u32 *dispc_ovl_get_color_modes(struct dispc_device *dispc,
 					    enum omap_plane_id plane)
 {
 	return dispc->feat->supported_color_modes[plane];
@@ -2087,8 +2138,9 @@ static s32 pixinc(int pixels, u8 ps)
 		return 1 + (pixels - 1) * ps;
 	else if (pixels < 0)
 		return 1 - (-pixels + 1) * ps;
-
-	BUG();
+	else
+		BUG();
+		return 0;
 }
 
 static void calc_offset(u16 screen_width, u16 width,
@@ -2446,7 +2498,7 @@ static int dispc_ovl_calc_scaling_44xx(struct dispc_device *dispc,
 
 	*decim_x = DIV_ROUND_UP(width, in_width_max);
 
-	*decim_x = max(*decim_x, decim_x_min);
+	*decim_x = *decim_x > decim_x_min ? *decim_x : decim_x_min;
 	if (*decim_x > *x_predecim)
 		return -EINVAL;
 
@@ -2484,7 +2536,8 @@ static int dispc_ovl_calc_scaling_44xx(struct dispc_device *dispc,
 	return 0;
 }
 
-enum omap_overlay_caps dispc_ovl_get_caps(struct dispc_device *dispc, enum omap_plane_id plane)
+static enum omap_overlay_caps dispc_ovl_get_caps(struct dispc_device *dispc,
+						 enum omap_plane_id plane)
 {
 	return dispc->feat->overlay_caps[plane];
 }
@@ -2601,7 +2654,8 @@ static int dispc_ovl_calc_scaling(struct dispc_device *dispc,
 	return 0;
 }
 
-void dispc_ovl_get_max_size(struct dispc_device *dispc, u16 *width, u16 *height)
+static void dispc_ovl_get_max_size(struct dispc_device *dispc,
+				   u16 *width, u16 *height)
 {
 	*width = dispc->feat->ovl_width_max;
 	*height = dispc->feat->ovl_height_max;
@@ -2786,7 +2840,7 @@ static int dispc_ovl_setup_common(struct dispc_device *dispc,
 	return 0;
 }
 
-int dispc_ovl_setup(struct dispc_device *dispc,
+static int dispc_ovl_setup(struct dispc_device *dispc,
 			   enum omap_plane_id plane,
 			   const struct omap_overlay_info *oi,
 			   const struct videomode *vm, bool mem_to_mem,
@@ -2814,7 +2868,7 @@ int dispc_ovl_setup(struct dispc_device *dispc,
 	return r;
 }
 
-int dispc_wb_setup(struct dispc_device *dispc,
+static int dispc_wb_setup(struct dispc_device *dispc,
 		   const struct omap_dss_writeback_info *wi,
 		   bool mem_to_mem, const struct videomode *vm,
 		   enum dss_writeback_channel channel_in)
@@ -2898,12 +2952,12 @@ int dispc_wb_setup(struct dispc_device *dispc,
 	return 0;
 }
 
-bool dispc_has_writeback(struct dispc_device *dispc)
+static bool dispc_has_writeback(struct dispc_device *dispc)
 {
 	return dispc->feat->has_writeback;
 }
 
-int dispc_ovl_enable(struct dispc_device *dispc,
+static int dispc_ovl_enable(struct dispc_device *dispc,
 			    enum omap_plane_id plane, bool enable)
 {
 	DSSDBG("dispc_enable_plane %d, %d\n", plane, enable);
@@ -2994,7 +3048,7 @@ static void dispc_mgr_enable_alpha_fixed_zorder(struct dispc_device *dispc,
 		REG_FLD_MOD(dispc, DISPC_CONFIG, enable, 19, 19);
 }
 
-void dispc_mgr_setup(struct dispc_device *dispc,
+static void dispc_mgr_setup(struct dispc_device *dispc,
 			    enum omap_channel channel,
 			    const struct omap_overlay_manager_info *info)
 {
@@ -3003,7 +3057,7 @@ void dispc_mgr_setup(struct dispc_device *dispc,
 				info->trans_key);
 	dispc_mgr_enable_trans_key(dispc, channel, info->trans_enabled);
 	dispc_mgr_enable_alpha_fixed_zorder(dispc, channel,
-			info->partial_alpha_enabled);
+			info->alpha_blender_enabled);
 	if (dispc_has_feature(dispc, FEAT_CPR)) {
 		dispc_mgr_enable_cpr(dispc, channel, info->cpr_enable);
 		dispc_mgr_set_cpr_coef(dispc, channel, &info->cpr_coefs);
@@ -3073,7 +3127,7 @@ static void dispc_mgr_enable_stallmode(struct dispc_device *dispc,
 	mgr_fld_write(dispc, channel, DISPC_MGR_FLD_STALLMODE, enable);
 }
 
-void dispc_mgr_set_lcd_config(struct dispc_device *dispc,
+static void dispc_mgr_set_lcd_config(struct dispc_device *dispc,
 				     enum omap_channel channel,
 				     const struct dss_lcd_mgr_config *config)
 {
@@ -3122,7 +3176,7 @@ static bool _dispc_mgr_pclk_ok(struct dispc_device *dispc,
 		return pclk <= dispc->feat->max_tv_pclk;
 }
 
-int dispc_mgr_check_timings(struct dispc_device *dispc,
+static int dispc_mgr_check_timings(struct dispc_device *dispc,
 				   enum omap_channel channel,
 				   const struct videomode *vm)
 {
@@ -3215,7 +3269,7 @@ static int vm_flag_to_int(enum display_flags flags, enum display_flags high,
 }
 
 /* change name to mode? */
-void dispc_mgr_set_timings(struct dispc_device *dispc,
+static void dispc_mgr_set_timings(struct dispc_device *dispc,
 				  enum omap_channel channel,
 				  const struct videomode *vm)
 {
@@ -3759,17 +3813,17 @@ int dispc_mgr_get_clock_div(struct dispc_device *dispc,
 	return 0;
 }
 
-u32 dispc_read_irqstatus(struct dispc_device *dispc)
+static u32 dispc_read_irqstatus(struct dispc_device *dispc)
 {
 	return dispc_read_reg(dispc, DISPC_IRQSTATUS);
 }
 
-void dispc_clear_irqstatus(struct dispc_device *dispc, u32 mask)
+static void dispc_clear_irqstatus(struct dispc_device *dispc, u32 mask)
 {
 	dispc_write_reg(dispc, DISPC_IRQSTATUS, mask);
 }
 
-void dispc_write_irqenable(struct dispc_device *dispc, u32 mask)
+static void dispc_write_irqenable(struct dispc_device *dispc, u32 mask)
 {
 	u32 old_mask = dispc_read_reg(dispc, DISPC_IRQENABLE);
 
@@ -3793,7 +3847,7 @@ void dispc_disable_sidle(struct dispc_device *dispc)
 	REG_FLD_MOD(dispc, DISPC_SYSCONFIG, 1, 4, 3);	/* SIDLEMODE: no idle */
 }
 
-u32 dispc_mgr_gamma_size(struct dispc_device *dispc,
+static u32 dispc_mgr_gamma_size(struct dispc_device *dispc,
 				enum omap_channel channel)
 {
 	const struct dispc_gamma_desc *gdesc = &mgr_desc[channel].gamma;
@@ -3848,7 +3902,7 @@ static const struct drm_color_lut dispc_mgr_gamma_default_lut[] = {
 	{ .red = U16_MAX, .green = U16_MAX, .blue = U16_MAX, },
 };
 
-void dispc_mgr_set_gamma(struct dispc_device *dispc,
+static void dispc_mgr_set_gamma(struct dispc_device *dispc,
 				enum omap_channel channel,
 				const struct drm_color_lut *lut,
 				unsigned int length)
@@ -3953,6 +4007,9 @@ static void _omap_dispc_initial_config(struct dispc_device *dispc)
 	if (dispc_has_feature(dispc, FEAT_FUNCGATED) ||
 	    dispc->feat->has_gamma_table)
 		REG_FLD_MOD(dispc, DISPC_CONFIG, 1, 9, 9);
+
+	if (dispc->feat->has_writeback)
+		dispc_wb_write_color_conv_coef(dispc, &coefs_rgb2yuv_bt601_full);
 
 	dispc_set_loadmode(dispc, OMAP_DSS_LOAD_FRAME_ONLY);
 
@@ -4518,7 +4575,7 @@ static irqreturn_t dispc_irq_handler(int irq, void *arg)
 	return dispc->user_handler(irq, dispc->user_data);
 }
 
-int dispc_request_irq(struct dispc_device *dispc, irq_handler_t handler,
+static int dispc_request_irq(struct dispc_device *dispc, irq_handler_t handler,
 			     void *dev_id)
 {
 	int r;
@@ -4542,7 +4599,7 @@ int dispc_request_irq(struct dispc_device *dispc, irq_handler_t handler,
 	return r;
 }
 
-void dispc_free_irq(struct dispc_device *dispc, void *dev_id)
+static void dispc_free_irq(struct dispc_device *dispc, void *dev_id)
 {
 	devm_free_irq(&dispc->pdev->dev, dispc->irq, dispc);
 
@@ -4550,7 +4607,7 @@ void dispc_free_irq(struct dispc_device *dispc, void *dev_id)
 	dispc->user_data = NULL;
 }
 
-u32 dispc_get_memory_bandwidth_limit(struct dispc_device *dispc)
+static u32 dispc_get_memory_bandwidth_limit(struct dispc_device *dispc)
 {
 	u32 limit = 0;
 
@@ -4610,7 +4667,7 @@ static const struct dispc_errata_i734_data {
 	.mgri = {
 		.default_color = 0,
 		.trans_enabled = false,
-		.partial_alpha_enabled = false,
+		.alpha_blender_enabled = false,
 		.cpr_enable = false,
 	},
 	.lcd_conf = {
@@ -4720,6 +4777,50 @@ static void dispc_errata_i734_wa(struct dispc_device *dispc)
 	REG_FLD_MOD(dispc, DISPC_CONFIG, gatestate, 8, 4);
 }
 
+static const struct dispc_ops dispc_ops = {
+	.read_irqstatus = dispc_read_irqstatus,
+	.clear_irqstatus = dispc_clear_irqstatus,
+	.write_irqenable = dispc_write_irqenable,
+
+	.request_irq = dispc_request_irq,
+	.free_irq = dispc_free_irq,
+
+	.runtime_get = dispc_runtime_get,
+	.runtime_put = dispc_runtime_put,
+
+	.get_num_ovls = dispc_get_num_ovls,
+	.get_num_mgrs = dispc_get_num_mgrs,
+
+	.get_memory_bandwidth_limit = dispc_get_memory_bandwidth_limit,
+
+	.mgr_enable = dispc_mgr_enable,
+	.mgr_is_enabled = dispc_mgr_is_enabled,
+	.mgr_get_vsync_irq = dispc_mgr_get_vsync_irq,
+	.mgr_get_framedone_irq = dispc_mgr_get_framedone_irq,
+	.mgr_get_sync_lost_irq = dispc_mgr_get_sync_lost_irq,
+	.mgr_go_busy = dispc_mgr_go_busy,
+	.mgr_go = dispc_mgr_go,
+	.mgr_set_lcd_config = dispc_mgr_set_lcd_config,
+	.mgr_check_timings = dispc_mgr_check_timings,
+	.mgr_set_timings = dispc_mgr_set_timings,
+	.mgr_setup = dispc_mgr_setup,
+	.mgr_gamma_size = dispc_mgr_gamma_size,
+	.mgr_set_gamma = dispc_mgr_set_gamma,
+
+	.ovl_enable = dispc_ovl_enable,
+	.ovl_setup = dispc_ovl_setup,
+	.ovl_get_color_modes = dispc_ovl_get_color_modes,
+	.ovl_color_mode_supported = dispc_ovl_color_mode_supported,
+	.ovl_get_caps = dispc_ovl_get_caps,
+	.ovl_get_max_size = dispc_ovl_get_max_size,
+
+	.wb_get_framedone_irq = dispc_wb_get_framedone_irq,
+	.wb_setup = dispc_wb_setup,
+	.has_writeback = dispc_has_writeback,
+	.wb_go_busy = dispc_wb_go_busy,
+	.wb_go = dispc_wb_go,
+};
+
 /* DISPC HW IP initialisation */
 static const struct of_device_id dispc_of_match[] = {
 	{ .compatible = "ti,omap2-dispc", .data = &omap24xx_dispc_feats },
@@ -4747,6 +4848,7 @@ static int dispc_bind(struct device *dev, struct device *master, void *data)
 	struct dispc_device *dispc;
 	u32 rev;
 	int r = 0;
+	struct resource *dispc_mem;
 	struct device_node *np = pdev->dev.of_node;
 
 	dispc = kzalloc(sizeof(*dispc), GFP_KERNEL);
@@ -4771,7 +4873,8 @@ static int dispc_bind(struct device *dev, struct device *master, void *data)
 	if (r)
 		goto err_free;
 
-	dispc->base = devm_platform_ioremap_resource(pdev, 0);
+	dispc_mem = platform_get_resource(dispc->pdev, IORESOURCE_MEM, 0);
+	dispc->base = devm_ioremap_resource(&pdev->dev, dispc_mem);
 	if (IS_ERR(dispc->base)) {
 		r = PTR_ERR(dispc->base);
 		goto err_free;
@@ -4819,6 +4922,7 @@ static int dispc_bind(struct device *dev, struct device *master, void *data)
 	dispc_runtime_put(dispc);
 
 	dss->dispc = dispc;
+	dss->dispc_ops = &dispc_ops;
 
 	dispc->debugfs = dss_debugfs_create_file(dss, "dispc", dispc_dump_regs,
 						 dispc);
@@ -4840,6 +4944,7 @@ static void dispc_unbind(struct device *dev, struct device *master, void *data)
 	dss_debugfs_remove_file(dispc->debugfs);
 
 	dss->dispc = NULL;
+	dss->dispc_ops = NULL;
 
 	pm_runtime_disable(dev);
 
@@ -4864,7 +4969,7 @@ static int dispc_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static __maybe_unused int dispc_runtime_suspend(struct device *dev)
+static int dispc_runtime_suspend(struct device *dev)
 {
 	struct dispc_device *dispc = dev_get_drvdata(dev);
 
@@ -4879,7 +4984,7 @@ static __maybe_unused int dispc_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static __maybe_unused int dispc_runtime_resume(struct device *dev)
+static int dispc_runtime_resume(struct device *dev)
 {
 	struct dispc_device *dispc = dev_get_drvdata(dev);
 
@@ -4907,7 +5012,8 @@ static __maybe_unused int dispc_runtime_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops dispc_pm_ops = {
-	SET_RUNTIME_PM_OPS(dispc_runtime_suspend, dispc_runtime_resume, NULL)
+	.runtime_suspend = dispc_runtime_suspend,
+	.runtime_resume = dispc_runtime_resume,
 	SET_LATE_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 };
 

@@ -38,6 +38,9 @@ static void __init dma_atomic_pool_debugfs_init(void)
 	struct dentry *root;
 
 	root = debugfs_create_dir("dma_pools", NULL);
+	if (IS_ERR_OR_NULL(root))
+		return;
+
 	debugfs_create_ulong("pool_size_dma", 0400, root, &pool_size_dma);
 	debugfs_create_ulong("pool_size_dma32", 0400, root, &pool_size_dma32);
 	debugfs_create_ulong("pool_size_kernel", 0400, root, &pool_size_kernel);
@@ -84,8 +87,8 @@ static int atomic_pool_expand(struct gen_pool *pool, size_t pool_size,
 	void *addr;
 	int ret = -ENOMEM;
 
-	/* Cannot allocate larger than MAX_ORDER */
-	order = min(get_order(pool_size), MAX_ORDER);
+	/* Cannot allocate larger than MAX_ORDER-1 */
+	order = min(get_order(pool_size), MAX_ORDER-1);
 
 	do {
 		pool_size = 1 << (PAGE_SHIFT + order);
@@ -190,7 +193,7 @@ static int __init dma_atomic_pool_init(void)
 
 	/*
 	 * If coherent_pool was not used on the command line, default the pool
-	 * sizes to 128KB per 1GB of memory, min 128KB, max MAX_ORDER.
+	 * sizes to 128KB per 1GB of memory, min 128KB, max MAX_ORDER-1.
 	 */
 	if (!atomic_pool_size) {
 		unsigned long pages = totalram_pages() / (SZ_1G / SZ_128K);

@@ -6,11 +6,13 @@
  * Author: Rahul T R <r-ravikumar@ti.com>
  */
 
-#ifndef __CDNS_DSI_J721E_H__
-#define __CDNS_DSI_J721E_H__
+#ifndef CDNS_DSI_J721E_H
+#define CDNS_DSI_J721E_H
 
 #include "cdns-dsi-core.h"
 
-extern const struct cdns_dsi_platform_ops dsi_ti_j721e_ops;
+struct dsi_platform_ops;
 
-#endif /* !__CDNS_DSI_J721E_H__ */
+extern const struct dsi_platform_ops dsi_ti_j721e_ops;
+
+#endif /* !CDNS_DSI_J721E_H */

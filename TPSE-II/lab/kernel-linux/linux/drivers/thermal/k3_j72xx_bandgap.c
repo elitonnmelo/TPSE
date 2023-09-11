@@ -5,7 +5,6 @@
  * Copyright (C) 2021 Texas Instruments Incorporated - http://www.ti.com/
  */
 
-#include <linux/math.h>
 #include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -19,6 +18,9 @@
 #include <linux/of.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
+#include <linux/cpufreq.h>
+#include <linux/cpumask.h>
+#include <linux/cpu_cooling.h>
 
 #define K3_VTM_DEVINFO_PWR0_OFFSET		0x4
 #define K3_VTM_DEVINFO_PWR0_TEMPSENS_CT_MASK	0xf0
@@ -151,6 +153,8 @@ static int prep_lookup_table(struct err_values *err_vals, int *ref_table)
 		/* 300 milli celsius steps */
 		while (i--)
 			derived_table[i] = derived_table[i + 1] - 300;
+		/* case 0 */
+		derived_table[i] = derived_table[i + 1] - 300;
 	}
 
 	/*
@@ -177,15 +181,34 @@ struct k3_j72xx_bandgap {
 	struct device *dev;
 	void __iomem *base;
 	void __iomem *cfg2_base;
+	void __iomem *fuse_base;
 	struct k3_thermal_data *ts_data[K3_VTM_MAX_NUM_TS];
 };
 
 /* common data structures */
 struct k3_thermal_data {
 	struct k3_j72xx_bandgap *bgp;
+	struct cpufreq_policy *policy;
+	struct thermal_zone_device *ti_thermal;
+	struct thermal_cooling_device *cool_dev;
+	struct work_struct thermal_wq;
 	u32 ctrl_offset;
 	u32 stat_offset;
+	enum thermal_device_mode mode;
+	int prev_temp;
+	int sensor_id;
 };
+
+static void k3_thermal_work(struct work_struct *work)
+{
+	struct k3_thermal_data *data = container_of(work,
+					struct k3_thermal_data, thermal_wq);
+
+	thermal_zone_device_update(data->ti_thermal, THERMAL_EVENT_UNSPECIFIED);
+
+	dev_info(&data->ti_thermal->device, "updated thermal zone %s\n",
+		 data->ti_thermal->type);
+}
 
 static int two_cmp(int tmp, int mask)
 {
@@ -246,13 +269,53 @@ static inline int k3_bgp_read_temp(struct k3_thermal_data *devdata,
 }
 
 /* Get temperature callback function for thermal zone */
-static int k3_thermal_get_temp(struct thermal_zone_device *tz, int *temp)
+static int k3_thermal_get_temp(void *devdata, int *temp)
 {
-	return k3_bgp_read_temp(thermal_zone_device_priv(tz), temp);
+	struct k3_thermal_data *data = devdata;
+	int ret = 0;
+
+	ret = k3_bgp_read_temp(data, temp);
+	if (ret)
+		return ret;
+
+	return ret;
 }
 
-static const struct thermal_zone_device_ops k3_of_thermal_ops = {
+static int k3_thermal_get_trend(void *p, int trip, enum thermal_trend *trend)
+{
+	struct k3_thermal_data *data = p;
+	struct k3_j72xx_bandgap *bgp;
+	u32 temp1, temp2;
+	int id, tr, ret = 0;
+
+	bgp = data->bgp;
+	id = data->sensor_id;
+
+	ret = k3_thermal_get_temp(data, &temp1);
+	if (ret)
+		return ret;
+	temp2 = data->prev_temp;
+
+	tr = temp1 - temp2;
+
+	data->prev_temp = temp1;
+
+	if (tr > 0)
+		*trend = THERMAL_TREND_RAISING;
+	else if (tr < 0)
+		*trend = THERMAL_TREND_DROPPING;
+	else
+		*trend = THERMAL_TREND_STABLE;
+
+	dev_dbg(bgp->dev, "The temperatures are t1 = %d and t2 = %d and trend =%d\n",
+		temp1, temp2, *trend);
+
+	return ret;
+}
+
+static const struct thermal_zone_of_device_ops k3_of_thermal_ops = {
 	.get_temp = k3_thermal_get_temp,
+	.get_trend = k3_thermal_get_trend,
 };
 
 static int k3_j72xx_bandgap_temp_to_adc_code(int temp)
@@ -275,7 +338,7 @@ static int k3_j72xx_bandgap_temp_to_adc_code(int temp)
 }
 
 static void get_efuse_values(int id, struct k3_thermal_data *data, int *err,
-			     void __iomem *fuse_base)
+			     struct k3_j72xx_bandgap *bgp)
 {
 	int i, tmp, pow;
 	int ct_offsets[5][K3_VTM_CORRECTION_TEMP_CNT] = {
@@ -297,16 +360,16 @@ static void get_efuse_values(int id, struct k3_thermal_data *data, int *err,
 		/* Extract the offset value using bit-mask */
 		if (ct_offsets[id][i] == -1 && i == 1) {
 			/* 25C offset Case of Sensor 2 split between 2 regs */
-			tmp = (readl(fuse_base + 0x8) & 0xE0000000) >> (29);
-			tmp |= ((readl(fuse_base + 0xC) & 0x1F) << 3);
+			tmp = (readl(bgp->fuse_base + 0x8) & 0xE0000000) >> (29);
+			tmp |= ((readl(bgp->fuse_base + 0xC) & 0x1F) << 3);
 			pow = tmp & 0x80;
 		} else if (ct_offsets[id][i] == -1 && i == 2) {
 			/* 125C Case of Sensor 3 split between 2 regs */
-			tmp = (readl(fuse_base + 0x4) & 0xF8000000) >> (27);
-			tmp |= ((readl(fuse_base + 0x8) & 0xF) << 5);
+			tmp = (readl(bgp->fuse_base + 0x4) & 0xF8000000) >> (27);
+			tmp |= ((readl(bgp->fuse_base + 0x8) & 0xF) << 5);
 			pow = tmp & 0x100;
 		} else {
-			tmp = readl(fuse_base + ct_offsets[id][i]);
+			tmp = readl(bgp->fuse_base + ct_offsets[id][i]);
 			tmp &= ct_bm[id][i];
 			tmp = tmp >> __ffs(ct_bm[id][i]);
 
@@ -339,8 +402,65 @@ static void print_look_up_table(struct device *dev, int *ref_table)
 }
 
 struct k3_j72xx_bandgap_data {
-	const bool has_errata_i2128;
+	unsigned int has_errata_i2128;
 };
+
+int k3_thermal_register_cpu_cooling(struct k3_j72xx_bandgap *bgp, int id)
+{
+	struct k3_thermal_data *data;
+	struct device_node *np = bgp->dev->of_node;
+
+	/*
+	 * We are assuming here that if one deploys the zone
+	 * using DT, then it must be aware that the cooling device
+	 * loading has to happen via cpufreq driver.
+	 */
+	if (of_find_property(np, "#thermal-sensor-cells", NULL))
+		return 0;
+
+	data = bgp->ts_data[id];
+	if (!data)
+		return -EINVAL;
+
+	data->policy = cpufreq_cpu_get(0);
+	if (!data->policy) {
+		pr_debug("%s: CPUFreq policy not found\n", __func__);
+		return -EPROBE_DEFER;
+	}
+
+	/* Register cooling device */
+	data->cool_dev = cpufreq_cooling_register(data->policy);
+	if (IS_ERR(data->cool_dev)) {
+		int ret = PTR_ERR(data->cool_dev);
+
+		dev_err(bgp->dev, "Failed to register cpu cooling device %d\n",
+			ret);
+		cpufreq_cpu_put(data->policy);
+
+		return ret;
+	}
+
+	data->mode = THERMAL_DEVICE_ENABLED;
+
+	INIT_WORK(&data->thermal_wq, k3_thermal_work);
+
+	return 0;
+}
+
+int ti_thermal_unregister_cpu_cooling(struct k3_j72xx_bandgap *bgp, int id)
+{
+	struct k3_thermal_data *data;
+
+	data = bgp->ts_data[id];
+
+	if (!IS_ERR_OR_NULL(data)) {
+		cpufreq_cooling_unregister(data->cool_dev);
+		if (data->policy)
+			cpufreq_cpu_put(data->policy);
+	}
+
+	return 0;
+}
 
 static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 {
@@ -350,12 +470,11 @@ static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct k3_j72xx_bandgap *bgp;
 	struct k3_thermal_data *data;
-	bool workaround_needed = false;
+	int workaround_needed = 0;
 	const struct k3_j72xx_bandgap_data *driver_data;
 	struct thermal_zone_device *ti_thermal;
 	int *ref_table;
 	struct err_values err_vals;
-	void __iomem *fuse_base;
 
 	const s64 golden_factors[] = {
 		-490019999999999936,
@@ -386,31 +505,14 @@ static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 	if (IS_ERR(bgp->cfg2_base))
 		return PTR_ERR(bgp->cfg2_base);
 
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 2);
+	bgp->fuse_base = devm_ioremap_resource(dev, res);
+	if (IS_ERR(bgp->fuse_base))
+		return PTR_ERR(bgp->fuse_base);
+
 	driver_data = of_device_get_match_data(dev);
 	if (driver_data)
 		workaround_needed = driver_data->has_errata_i2128;
-
-	/*
-	 * Some of TI's J721E SoCs require a software trimming procedure
-	 * for the temperature monitors to function properly. To determine
-	 * if this particular SoC is NOT affected, both bits in the
-	 * WKUP_SPARE_FUSE0[31:30] will be set (0xC0000000) indicating
-	 * when software trimming should NOT be applied.
-	 *
-	 * https://www.ti.com/lit/er/sprz455c/sprz455c.pdf
-	 */
-	if (workaround_needed) {
-		res = platform_get_resource(pdev, IORESOURCE_MEM, 2);
-		fuse_base = devm_ioremap_resource(dev, res);
-		if (IS_ERR(fuse_base))
-			return PTR_ERR(fuse_base);
-
-		if ((readl(fuse_base) & 0xc0000000) == 0xc0000000)
-			workaround_needed = false;
-	}
-
-	dev_dbg(bgp->dev, "Work around %sneeded\n",
-		workaround_needed ? "" : "not ");
 
 	pm_runtime_enable(dev);
 	ret = pm_runtime_get_sync(dev);
@@ -441,8 +543,15 @@ static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 				     GFP_KERNEL);
 	if (!derived_table) {
 		ret = -ENOMEM;
-		goto err_free_ref_table;
+		goto err_alloc;
 	}
+
+	/* Workaround not needed if bit30/bit31 is set even for J721e */
+	if (workaround_needed && (readl(bgp->fuse_base + 0x0) & 0xc0000000) == 0xc0000000)
+		workaround_needed = false;
+
+	dev_dbg(bgp->dev, "Work around %sneeded\n",
+		workaround_needed ? "not " : "");
 
 	if (!workaround_needed)
 		init_table(5, ref_table, golden_factors);
@@ -452,6 +561,7 @@ static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 	/* Register the thermal sensors */
 	for (id = 0; id < cnt; id++) {
 		data[id].bgp = bgp;
+		data[id].sensor_id = id;
 		data[id].ctrl_offset = K3_VTM_TMPSENS0_CTRL_OFFSET + id * 0x20;
 		data[id].stat_offset = data[id].ctrl_offset +
 					K3_VTM_TMPSENS_STAT_OFFSET;
@@ -462,7 +572,7 @@ static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 			err_vals.refs[1] = PLUS30CREF;
 			err_vals.refs[2] = PLUS125CREF;
 			err_vals.refs[3] = PLUS150CREF;
-			get_efuse_values(id, &data[id], err_vals.errs, fuse_base);
+			get_efuse_values(id, &data[id], err_vals.errs, bgp);
 		}
 
 		if (id == 0 && workaround_needed)
@@ -477,12 +587,19 @@ static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 		writel(val, data[id].bgp->cfg2_base + data[id].ctrl_offset);
 
 		bgp->ts_data[id] = &data[id];
-		ti_thermal = devm_thermal_of_zone_register(bgp->dev, id, &data[id],
-							   &k3_of_thermal_ops);
+		if (id == 1)
+			ret = k3_thermal_register_cpu_cooling(bgp, 1);
+		if (ret)
+			goto err_alloc;
+
+		ti_thermal =
+		devm_thermal_zone_of_sensor_register(bgp->dev, id,
+						     &data[id],
+						     &k3_of_thermal_ops);
 		if (IS_ERR(ti_thermal)) {
 			dev_err(bgp->dev, "thermal zone device is NULL\n");
 			ret = PTR_ERR(ti_thermal);
-			goto err_free_ref_table;
+			goto err_alloc;
 		}
 	}
 
@@ -513,9 +630,6 @@ static int k3_j72xx_bandgap_probe(struct platform_device *pdev)
 
 	return 0;
 
-err_free_ref_table:
-	kfree(ref_table);
-
 err_alloc:
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
@@ -531,12 +645,12 @@ static int k3_j72xx_bandgap_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct k3_j72xx_bandgap_data k3_j72xx_bandgap_j721e_data = {
-	.has_errata_i2128 = true,
+const struct k3_j72xx_bandgap_data k3_j72xx_bandgap_j721e_data = {
+	.has_errata_i2128 = 1,
 };
 
-static const struct k3_j72xx_bandgap_data k3_j72xx_bandgap_j7200_data = {
-	.has_errata_i2128 = false,
+const struct k3_j72xx_bandgap_data k3_j72xx_bandgap_j7200_data = {
+	.has_errata_i2128 = 0,
 };
 
 static const struct of_device_id of_k3_j72xx_bandgap_match[] = {

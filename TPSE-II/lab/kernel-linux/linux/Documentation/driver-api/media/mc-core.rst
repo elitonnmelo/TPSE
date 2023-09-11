@@ -42,16 +42,9 @@ Allocation of the structure is handled by the media device driver, usually by
 embedding the :c:type:`media_device` instance in a larger driver-specific
 structure.
 
-Drivers initialise media device instances by calling
-:c:func:`media_device_init()`. After initialising a media device instance, it is
-registered by calling :c:func:`__media_device_register()` via the macro
-``media_device_register()`` and unregistered by calling
-:c:func:`media_device_unregister()`. An initialised media device must be
-eventually cleaned up by calling :c:func:`media_device_cleanup()`.
-
-Note that it is not allowed to unregister a media device instance that was not
-previously registered, or clean up a media device instance that was not
-previously initialised.
+Drivers register media device instances by calling
+:c:func:`__media_device_register()` via the macro ``media_device_register()``
+and unregistered by calling :c:func:`media_device_unregister()`.
 
 Entities
 ^^^^^^^^
@@ -174,10 +167,13 @@ Drivers initiate a graph traversal by calling
 :c:func:`media_graph_walk_start()`
 
 The graph structure, provided by the caller, is initialized to start graph
-traversal at the given entity.
+traversal at the given pad in an entity.
 
-Drivers can then retrieve the next entity by calling
-:c:func:`media_graph_walk_next()`
+Drivers can then retrieve the next pad by calling
+:c:func:`media_graph_walk_next()`. Only the pad through which the entity
+is first reached is returned. If the caller is interested in knowing which
+further pads would be connected, the :c:func:`media_entity_has_route()`
+function can be used for that.
 
 When the graph traversal is complete the function will return ``NULL``.
 
@@ -186,9 +182,8 @@ is required and the graph structure can be freed normally.
 
 Helper functions can be used to find a link between two given pads, or a pad
 connected to another pad through an enabled link
-(:c:func:`media_entity_find_link()`, :c:func:`media_pad_remote_pad_first()`,
-:c:func:`media_entity_remote_source_pad_unique()` and
-:c:func:`media_pad_remote_pad_unique()`).
+:c:func:`media_entity_find_link()` and
+:c:func:`media_entity_remote_pad()`.
 
 Use count and power handling
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -214,28 +209,19 @@ Link properties can be modified at runtime by calling
 Pipelines and media streams
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-A media stream is a stream of pixels or metadata originating from one or more
-source devices (such as a sensors) and flowing through media entity pads
-towards the final sinks. The stream can be modified on the route by the
-devices (e.g. scaling or pixel format conversions), or it can be split into
-multiple branches, or multiple branches can be merged.
-
-A media pipeline is a set of media streams which are interdependent. This
-interdependency can be caused by the hardware (e.g. configuration of a second
-stream cannot be changed if the first stream has been enabled) or by the driver
-due to the software design. Most commonly a media pipeline consists of a single
-stream which does not branch.
-
 When starting streaming, drivers must notify all entities in the pipeline to
 prevent link states from being modified during streaming by calling
 :c:func:`media_pipeline_start()`.
 
-The function will mark all the pads which are part of the pipeline as streaming.
+The function will mark all entities connected to the given pad through
+enabled routes and links, either directly or indirectly, as streaming.
 
-The struct media_pipeline instance pointed to by the pipe argument will be
-stored in every pad in the pipeline. Drivers should embed the struct
-media_pipeline in higher-level pipeline structures and can then access the
-pipeline through the struct media_pad pipe field.
+The struct media_pipeline instance pointed to by
+the pipe argument will be stored in every pad in the pipeline.
+Drivers should embed the struct media_pipeline
+in higher-level pipeline structures and can then access the
+pipeline through the struct media_entity
+pipe field.
 
 Calls to :c:func:`media_pipeline_start()` can be nested.
 The pipeline pointer must be identical for all nested calls to the function.

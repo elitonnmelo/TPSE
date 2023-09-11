@@ -315,6 +315,7 @@ static int dw_mipi_dsi_host_attach(struct mipi_dsi_host *host,
 	struct dw_mipi_dsi *dsi = host_to_dsi(host);
 	const struct dw_mipi_dsi_plat_data *pdata = dsi->plat_data;
 	struct drm_bridge *bridge;
+	struct drm_panel *panel;
 	int ret;
 
 	if (device->lanes > dsi->plat_data->max_data_lanes) {
@@ -328,9 +329,17 @@ static int dw_mipi_dsi_host_attach(struct mipi_dsi_host *host,
 	dsi->format = device->format;
 	dsi->mode_flags = device->mode_flags;
 
-	bridge = devm_drm_of_get_bridge(dsi->dev, dsi->dev->of_node, 1, 0);
-	if (IS_ERR(bridge))
-		return PTR_ERR(bridge);
+	ret = drm_of_find_panel_or_bridge(host->dev->of_node, 1, 0,
+					  &panel, &bridge);
+	if (ret)
+		return ret;
+
+	if (panel) {
+		bridge = drm_panel_bridge_add_typed(panel,
+						    DRM_MODE_CONNECTOR_DSI);
+		if (IS_ERR(bridge))
+			return PTR_ERR(bridge);
+	}
 
 	dsi->panel_bridge = bridge;
 
@@ -845,8 +854,7 @@ static void dw_mipi_dsi_clear_err(struct dw_mipi_dsi *dsi)
 	dsi_write(dsi, DSI_INT_MSK1, 0);
 }
 
-static void dw_mipi_dsi_bridge_post_atomic_disable(struct drm_bridge *bridge,
-						   struct drm_bridge_state *old_bridge_state)
+static void dw_mipi_dsi_bridge_post_disable(struct drm_bridge *bridge)
 {
 	struct dw_mipi_dsi *dsi = bridge_to_dsi(bridge);
 	const struct dw_mipi_dsi_phy_ops *phy_ops = dsi->plat_data->phy_ops;
@@ -953,8 +961,7 @@ static void dw_mipi_dsi_bridge_mode_set(struct drm_bridge *bridge,
 		dw_mipi_dsi_mode_set(dsi->slave, adjusted_mode);
 }
 
-static void dw_mipi_dsi_bridge_atomic_enable(struct drm_bridge *bridge,
-					     struct drm_bridge_state *old_bridge_state)
+static void dw_mipi_dsi_bridge_enable(struct drm_bridge *bridge)
 {
 	struct dw_mipi_dsi *dsi = bridge_to_dsi(bridge);
 
@@ -974,10 +981,7 @@ dw_mipi_dsi_bridge_mode_valid(struct drm_bridge *bridge,
 	enum drm_mode_status mode_status = MODE_OK;
 
 	if (pdata->mode_valid)
-		mode_status = pdata->mode_valid(pdata->priv_data, mode,
-						dsi->mode_flags,
-						dw_mipi_dsi_get_lanes(dsi),
-						dsi->format);
+		mode_status = pdata->mode_valid(pdata->priv_data, mode);
 
 	return mode_status;
 }
@@ -1001,14 +1005,11 @@ static int dw_mipi_dsi_bridge_attach(struct drm_bridge *bridge,
 }
 
 static const struct drm_bridge_funcs dw_mipi_dsi_bridge_funcs = {
-	.atomic_duplicate_state	= drm_atomic_helper_bridge_duplicate_state,
-	.atomic_destroy_state	= drm_atomic_helper_bridge_destroy_state,
-	.atomic_reset		= drm_atomic_helper_bridge_reset,
-	.atomic_enable		= dw_mipi_dsi_bridge_atomic_enable,
-	.atomic_post_disable	= dw_mipi_dsi_bridge_post_atomic_disable,
-	.mode_set		= dw_mipi_dsi_bridge_mode_set,
-	.mode_valid		= dw_mipi_dsi_bridge_mode_valid,
-	.attach			= dw_mipi_dsi_bridge_attach,
+	.mode_set     = dw_mipi_dsi_bridge_mode_set,
+	.enable	      = dw_mipi_dsi_bridge_enable,
+	.post_disable = dw_mipi_dsi_bridge_post_disable,
+	.mode_valid   = dw_mipi_dsi_bridge_mode_valid,
+	.attach	      = dw_mipi_dsi_bridge_attach,
 };
 
 #ifdef CONFIG_DEBUG_FS
@@ -1229,7 +1230,15 @@ EXPORT_SYMBOL_GPL(dw_mipi_dsi_remove);
  */
 int dw_mipi_dsi_bind(struct dw_mipi_dsi *dsi, struct drm_encoder *encoder)
 {
-	return drm_bridge_attach(encoder, &dsi->bridge, NULL, 0);
+	int ret;
+
+	ret = drm_bridge_attach(encoder, &dsi->bridge, NULL, 0);
+	if (ret) {
+		DRM_ERROR("Failed to initialize bridge with drm\n");
+		return ret;
+	}
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(dw_mipi_dsi_bind);
 

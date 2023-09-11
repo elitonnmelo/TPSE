@@ -16,13 +16,12 @@ VIDIOC_SUBDEV_G_ROUTING - VIDIOC_SUBDEV_S_ROUTING - Get or set routing between s
 Synopsis
 ========
 
-.. c:macro:: VIDIOC_SUBDEV_G_ROUTING
+.. c:function:: int ioctl( int fd, VIDIOC_SUBDEV_G_ROUTING, struct v4l2_subdev_routing *argp )
+    :name: VIDIOC_SUBDEV_G_ROUTING
 
-``int ioctl(int fd, VIDIOC_SUBDEV_G_ROUTING, struct v4l2_subdev_routing *argp)``
+.. c:function:: int ioctl( int fd, VIDIOC_SUBDEV_S_ROUTING, struct v4l2_subdev_routing *argp )
+    :name: VIDIOC_SUBDEV_S_ROUTING
 
-.. c:macro:: VIDIOC_SUBDEV_S_ROUTING
-
-``int ioctl(int fd, VIDIOC_SUBDEV_S_ROUTING, struct v4l2_subdev_routing *argp)``
 
 Arguments
 =========
@@ -42,21 +41,19 @@ The routing configuration determines the flows of data inside an entity.
 
 Drivers report their current routing tables using the
 ``VIDIOC_SUBDEV_G_ROUTING`` ioctl and application may enable or disable routes
-with the ``VIDIOC_SUBDEV_S_ROUTING`` ioctl, by adding or removing routes and
-setting or clearing flags of the  ``flags`` field of a
-struct :c:type:`v4l2_subdev_route`.
+with the VIDIOC_SUBDEV_S_ROUTING ioctl, by adding or removing routes and setting
+or clearing the ``V4L2_SUBDEV_ROUTE_FL_ACTIVE`` flag of the  ``flags`` field of
+a struct :c:type:`v4l2_subdev_route`.
 
-All stream configurations are reset when ``VIDIOC_SUBDEV_S_ROUTING`` is called. This
-means that the userspace must reconfigure all streams after calling the ioctl
-with e.g. ``VIDIOC_SUBDEV_S_FMT``.
+A special case for routing are routes marked with
+``V4L2_SUBDEV_ROUTE_FL_SOURCE`` flag. These routes are used to describe
+source endpoints on sensors and the sink fields are unused.
 
-Only subdevices which have both sink and source pads can support routing.
-
-When inspecting routes through ``VIDIOC_SUBDEV_G_ROUTING`` and the application
+When inspecting routes through VIDIOC_SUBDEV_G_ROUTING and the application
 provided ``num_routes`` is not big enough to contain all the available routes
 the subdevice exposes, drivers return the ENOSPC error code and adjust the
 value of the ``num_routes`` field. Application should then reserve enough memory
-for all the route entries and call ``VIDIOC_SUBDEV_G_ROUTING`` again.
+for all the route entries and call VIDIOC_SUBDEV_G_ROUTING again.
 
 .. tabularcolumns:: |p{4.4cm}|p{4.4cm}|p{8.7cm}|
 
@@ -122,8 +119,15 @@ for all the route entries and call ``VIDIOC_SUBDEV_G_ROUTING`` again.
     :widths:       3 1 4
 
     * - V4L2_SUBDEV_ROUTE_FL_ACTIVE
-      - 0x0001
+      - 0
       - The route is enabled. Set by applications.
+    * - V4L2_SUBDEV_ROUTE_FL_IMMUTABLE
+      - 1
+      - The route is immutable. Set by the driver.
+    * - V4L2_SUBDEV_ROUTE_FL_SOURCE
+      - 2
+      - The route is a source route, and the ``sink_pad`` and ``sink_stream``
+        fields are unused. Set by the driver.
 
 Return Value
 ============
@@ -133,15 +137,10 @@ appropriately. The generic error codes are described at the
 :ref:`Generic Error Codes <gen-errors>` chapter.
 
 ENOSPC
-   The application provided ``num_routes`` is not big enough to contain
-   all the available routes the subdevice exposes.
+   The number of provided route entries is less than the available ones.
 
 EINVAL
    The sink or source pad identifiers reference a non-existing pad, or reference
    pads of different types (ie. the sink_pad identifiers refers to a source pad)
    or the sink or source stream identifiers reference a non-existing stream on
    the sink or source pad.
-
-E2BIG
-   The application provided ``num_routes`` for ``VIDIOC_SUBDEV_S_ROUTING`` is
-   larger than the number of routes the driver can handle.

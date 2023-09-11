@@ -49,7 +49,7 @@ int fbtft_write_buf_dc(struct fbtft_par *par, void *buf, size_t len, int dc)
 EXPORT_SYMBOL(fbtft_write_buf_dc);
 
 void fbtft_dbg_hex(const struct device *dev, int groupsize,
-		   const void *buf, size_t len, const char *fmt, ...)
+		   void *buf, size_t len, const char *fmt, ...)
 {
 	va_list args;
 	static char textbuf[512];
@@ -137,7 +137,8 @@ static int fbtft_backlight_update_status(struct backlight_device *bd)
 		      "%s: polarity=%d, power=%d, fb_blank=%d\n",
 		      __func__, polarity, bd->props.power, bd->props.fb_blank);
 
-	if (!backlight_is_blank(bd))
+	if ((bd->props.power == FB_BLANK_UNBLANK) &&
+	    (bd->props.fb_blank == FB_BLANK_UNBLANK))
 		gpiod_set_value(par->gpio.led[0], polarity);
 	else
 		gpiod_set_value(par->gpio.led[0], !polarity);
@@ -321,11 +322,12 @@ static void fbtft_mkdirty(struct fb_info *info, int y, int height)
 	schedule_delayed_work(&info->deferred_work, fbdefio->delay);
 }
 
-static void fbtft_deferred_io(struct fb_info *info, struct list_head *pagereflist)
+static void fbtft_deferred_io(struct fb_info *info, struct list_head *pagelist)
 {
 	struct fbtft_par *par = info->par;
 	unsigned int dirty_lines_start, dirty_lines_end;
-	struct fb_deferred_io_pageref *pageref;
+	struct page *page;
+	unsigned long index;
 	unsigned int y_low = 0, y_high = 0;
 	int count = 0;
 
@@ -338,13 +340,14 @@ static void fbtft_deferred_io(struct fb_info *info, struct list_head *pagereflis
 	spin_unlock(&par->dirty_lock);
 
 	/* Mark display lines as dirty */
-	list_for_each_entry(pageref, pagereflist, list) {
+	list_for_each_entry(page, pagelist, lru) {
 		count++;
-		y_low = pageref->offset / info->fix.line_length;
-		y_high = (pageref->offset + PAGE_SIZE - 1) / info->fix.line_length;
+		index = page->index << PAGE_SHIFT;
+		y_low = index / info->fix.line_length;
+		y_high = (index + PAGE_SIZE - 1) / info->fix.line_length;
 		dev_dbg(info->device,
 			"page->index=%lu y_low=%d y_high=%d\n",
-			pageref->page->index, y_low, y_high);
+			page->index, y_low, y_high);
 		if (y_high > info->var.yres - 1)
 			y_high = info->var.yres - 1;
 		if (y_low < dirty_lines_start)
@@ -649,11 +652,10 @@ struct fb_info *fbtft_framebuffer_alloc(struct fbtft_display *display,
 	fbops->fb_imageblit =      fbtft_fb_imageblit;
 	fbops->fb_setcolreg =      fbtft_fb_setcolreg;
 	fbops->fb_blank     =      fbtft_fb_blank;
-	fbops->fb_mmap      =      fb_deferred_io_mmap;
 
-	fbdefio->delay =            HZ / fps;
-	fbdefio->sort_pagereflist = true;
-	fbdefio->deferred_io =      fbtft_deferred_io;
+	fbdefio->delay =           HZ / fps;
+	fbdefio->deferred_io =     fbtft_deferred_io;
+	fb_deferred_io_init(info);
 
 	snprintf(info->fix.id, sizeof(info->fix.id), "%s", dev->driver->name);
 	info->fix.type =           FB_TYPE_PACKED_PIXELS;
@@ -664,7 +666,6 @@ struct fb_info *fbtft_framebuffer_alloc(struct fbtft_display *display,
 	info->fix.line_length =    width * bpp / 8;
 	info->fix.accel =          FB_ACCEL_NONE;
 	info->fix.smem_len =       vmem_size;
-	fb_deferred_io_init(info);
 
 	info->var.rotate =         pdata->rotate;
 	info->var.xres =           width;
@@ -840,7 +841,7 @@ int fbtft_register_framebuffer(struct fb_info *fb_info)
 		sprintf(text1, ", %zu KiB buffer memory", par->txbuf.len >> 10);
 	if (spi)
 		sprintf(text2, ", spi%d.%d at %d MHz", spi->master->bus_num,
-			spi_get_chipselect(spi, 0), spi->max_speed_hz / 1000000);
+			spi->chip_select, spi->max_speed_hz / 1000000);
 	dev_info(fb_info->dev,
 		 "%s frame buffer, %dx%d, %d KiB video memory%s, fps=%lu%s\n",
 		 fb_info->fix.id, fb_info->var.xres, fb_info->var.yres,
@@ -984,7 +985,9 @@ out_free:
 int fbtft_init_display(struct fbtft_par *par)
 {
 	int buf[64];
-	int i;
+	char msg[128];
+	char str[16];
+	int i = 0;
 	int j;
 
 	/* sanity check */
@@ -995,11 +998,9 @@ int fbtft_init_display(struct fbtft_par *par)
 	}
 
 	/* make sure stop marker exists */
-	for (i = 0; i < FBTFT_MAX_INIT_SEQUENCE; i++) {
+	for (i = 0; i < FBTFT_MAX_INIT_SEQUENCE; i++)
 		if (par->init_sequence[i] == -3)
 			break;
-	}
-
 	if (i == FBTFT_MAX_INIT_SEQUENCE) {
 		dev_err(par->info->device,
 			"missing stop marker at end of init sequence\n");
@@ -1028,14 +1029,17 @@ int fbtft_init_display(struct fbtft_par *par)
 		switch (par->init_sequence[i]) {
 		case -1:
 			i++;
-
 			/* make debug message */
-			for (j = 0; par->init_sequence[i + 1 + j] >= 0; j++)
-				;
-
-			fbtft_par_dbg_hex(DEBUG_INIT_DISPLAY, par, par->info->device,
-					  s16, &par->init_sequence[i + 1], j,
-					  "init: write(0x%02X)", par->init_sequence[i]);
+			strcpy(msg, "");
+			j = i + 1;
+			while (par->init_sequence[j] >= 0) {
+				sprintf(str, "0x%02X ", par->init_sequence[j]);
+				strcat(msg, str);
+				j++;
+			}
+			fbtft_par_dbg(DEBUG_INIT_DISPLAY, par,
+				      "init: write(0x%02X) %s\n",
+				      par->init_sequence[i], msg);
 
 			/* Write */
 			j = 0;
@@ -1310,17 +1314,23 @@ EXPORT_SYMBOL(fbtft_probe_common);
  * @info: Framebuffer
  *
  * Unregisters and releases the framebuffer
+ *
+ * Return: 0 if successful, negative if error
  */
-void fbtft_remove_common(struct device *dev, struct fb_info *info)
+int fbtft_remove_common(struct device *dev, struct fb_info *info)
 {
 	struct fbtft_par *par;
 
+	if (!info)
+		return -EINVAL;
 	par = info->par;
 	if (par)
 		fbtft_par_dbg(DEBUG_DRIVER_INIT_FUNCTIONS, par,
 			      "%s()\n", __func__);
 	fbtft_unregister_framebuffer(info);
 	fbtft_framebuffer_release(info);
+
+	return 0;
 }
 EXPORT_SYMBOL(fbtft_remove_common);
 

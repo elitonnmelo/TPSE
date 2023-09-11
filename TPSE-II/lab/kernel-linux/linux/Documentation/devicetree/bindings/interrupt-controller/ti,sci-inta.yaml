@@ -79,13 +79,13 @@ properties:
             "limit" specifies the limit for translation
 
   ti,unmapped-event-sources:
-    $ref: /schemas/types.yaml#/definitions/phandle-array
-    items:
-      maxItems: 1
+    $ref: /schemas/types.yaml#definitions/phandle-array
     description:
       Array of phandles to DMA controllers where the unmapped events originate.
 
   power-domains:
+    description:
+      Power domain if available
     maxItems: 1
 
 required:

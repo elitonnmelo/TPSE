@@ -110,6 +110,7 @@
 			opp-hz = /bits/ 64 <200000000>;
 			opp-supported-hw = <0x01 0x0007>;
 			clock-latency-ns = <6000000>;
+			opp-suspend;
 		};
 
 		opp-400000000 {
@@ -140,15 +141,13 @@
 			opp-hz = /bits/ 64 <1250000000>;
 			opp-supported-hw = <0x01 0x0004>;
 			clock-latency-ns = <6000000>;
-			opp-suspend;
 		};
 	};
 
 	L2_0: l2-cache0 {
 		compatible = "cache";
-		cache-unified;
 		cache-level = <2>;
-		cache-size = <0x80000>;
+		cache-size = <0x40000>;
 		cache-line-size = <64>;
 		cache-sets = <512>;
 	};

@@ -44,7 +44,7 @@ static void cdns_dsi_j721e_disable(struct cdns_dsi *dsi)
 	writel(0, dsi->j721e_regs + DSI_WRAP_DPI_CONTROL);
 }
 
-const struct cdns_dsi_platform_ops dsi_ti_j721e_ops = {
+const struct dsi_platform_ops dsi_ti_j721e_ops = {
 	.init = cdns_dsi_j721e_init,
 	.enable = cdns_dsi_j721e_enable,
 	.disable = cdns_dsi_j721e_disable,

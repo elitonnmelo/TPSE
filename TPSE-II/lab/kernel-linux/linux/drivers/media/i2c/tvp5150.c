@@ -964,7 +964,7 @@ static int tvp5150_enable(struct v4l2_subdev *sd)
 
 	/*
 	 * Enable the YCbCr and clock outputs. In discrete sync mode
-	 * (non-BT.656) additionally enable the sync outputs.
+	 * (non-BT.656) additionally enable the the sync outputs.
 	 */
 	switch (decoder->mbus_type) {
 	case V4L2_MBUS_PARALLEL:
@@ -1198,10 +1198,8 @@ static int tvp5150_get_mbus_config(struct v4l2_subdev *sd,
 	struct tvp5150 *decoder = to_tvp5150(sd);
 
 	cfg->type = decoder->mbus_type;
-	cfg->bus.parallel.flags = V4L2_MBUS_MASTER
-				| V4L2_MBUS_PCLK_SAMPLE_RISING
-				| V4L2_MBUS_FIELD_EVEN_LOW
-				| V4L2_MBUS_DATA_ACTIVE_HIGH;
+	cfg->flags = V4L2_MBUS_MASTER | V4L2_MBUS_PCLK_SAMPLE_RISING
+		   | V4L2_MBUS_FIELD_EVEN_LOW | V4L2_MBUS_DATA_ACTIVE_HIGH;
 
 	return 0;
 }
@@ -1285,7 +1283,7 @@ static int tvp5150_disable_all_input_links(struct tvp5150 *decoder)
 	int err;
 
 	for (i = 0; i < TVP5150_NUM_PADS - 1; i++) {
-		connector_pad = media_pad_remote_pad_first(&decoder->pads[i]);
+		connector_pad = media_entity_remote_pad(&decoder->pads[i]);
 		if (!connector_pad)
 			continue;
 
@@ -1415,7 +1413,8 @@ static const struct media_entity_operations tvp5150_sd_media_ops = {
  ****************************************************************************/
 static int __maybe_unused tvp5150_runtime_suspend(struct device *dev)
 {
-	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct i2c_client *client = to_i2c_client(dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct tvp5150 *decoder = to_tvp5150(sd);
 
 	if (decoder->irq)
@@ -1428,7 +1427,8 @@ static int __maybe_unused tvp5150_runtime_suspend(struct device *dev)
 
 static int __maybe_unused tvp5150_runtime_resume(struct device *dev)
 {
-	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct i2c_client *client = to_i2c_client(dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct tvp5150 *decoder = to_tvp5150(sd);
 
 	if (decoder->irq)
@@ -1450,9 +1450,11 @@ static int tvp5150_s_stream(struct v4l2_subdev *sd, int enable)
 	       TVP5150_MISC_CTL_CLOCK_OE;
 
 	if (enable) {
-		ret = pm_runtime_resume_and_get(sd->dev);
-		if (ret < 0)
+		ret = pm_runtime_get_sync(sd->dev);
+		if (ret < 0) {
+			pm_runtime_put_noidle(sd->dev);
 			return ret;
+		}
 
 		tvp5150_enable(sd);
 
@@ -1675,7 +1677,15 @@ err:
 
 static int tvp5150_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
-	return pm_runtime_resume_and_get(sd->dev);
+	int ret;
+
+	ret = pm_runtime_get_sync(sd->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(sd->dev);
+		return ret;
+	}
+
+	return 0;
 }
 
 static int tvp5150_close(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
@@ -2230,7 +2240,7 @@ err:
 	return res;
 }
 
-static void tvp5150_remove(struct i2c_client *c)
+static int tvp5150_remove(struct i2c_client *c)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(c);
 	struct tvp5150 *decoder = to_tvp5150(sd);
@@ -2250,6 +2260,8 @@ static void tvp5150_remove(struct i2c_client *c)
 	v4l2_ctrl_handler_free(&decoder->hdl);
 	pm_runtime_disable(&c->dev);
 	pm_runtime_set_suspended(&c->dev);
+
+	return 0;
 }
 
 /* ----------------------------------------------------------------------- */
@@ -2280,7 +2292,7 @@ static struct i2c_driver tvp5150_driver = {
 		.name	= "tvp5150",
 		.pm	= &tvp5150_pm_ops,
 	},
-	.probe		= tvp5150_probe,
+	.probe_new	= tvp5150_probe,
 	.remove		= tvp5150_remove,
 	.id_table	= tvp5150_id,
 };

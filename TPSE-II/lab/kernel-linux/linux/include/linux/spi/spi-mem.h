@@ -20,11 +20,27 @@
 		.nbytes = 1,					\
 	}
 
+#define SPI_MEM_OP_CMD_DTR(__nbytes, __opcode, __buswidth)	\
+	{							\
+		.nbytes = __nbytes,				\
+		.opcode = __opcode,				\
+		.buswidth = __buswidth,				\
+		.dtr = 1,					\
+	}
+
 #define SPI_MEM_OP_ADDR(__nbytes, __val, __buswidth)		\
 	{							\
 		.nbytes = __nbytes,				\
 		.val = __val,					\
 		.buswidth = __buswidth,				\
+	}
+
+#define SPI_MEM_OP_ADDR_DTR(__nbytes, __val, __buswidth)	\
+	{							\
+		.nbytes = __nbytes,				\
+		.val = __val,					\
+		.buswidth = __buswidth,				\
+		.dtr = 1,					\
 	}
 
 #define SPI_MEM_OP_NO_ADDR	{ }
@@ -33,6 +49,13 @@
 	{							\
 		.nbytes = __nbytes,				\
 		.buswidth = __buswidth,				\
+	}
+
+#define SPI_MEM_OP_DUMMY_DTR(__nbytes, __buswidth)		\
+	{							\
+		.nbytes = __nbytes,				\
+		.buswidth = __buswidth,				\
+		.dtr = 1,					\
 	}
 
 #define SPI_MEM_OP_NO_DUMMY	{ }
@@ -45,12 +68,30 @@
 		.buswidth = __buswidth,				\
 	}
 
+#define SPI_MEM_OP_DATA_IN_DTR(__nbytes, __buf, __buswidth)	\
+	{							\
+		.dir = SPI_MEM_DATA_IN,				\
+		.nbytes = __nbytes,				\
+		.buf.in = __buf,				\
+		.buswidth = __buswidth,				\
+		.dtr = 1,					\
+	}
+
 #define SPI_MEM_OP_DATA_OUT(__nbytes, __buf, __buswidth)	\
 	{							\
 		.dir = SPI_MEM_DATA_OUT,			\
 		.nbytes = __nbytes,				\
 		.buf.out = __buf,				\
 		.buswidth = __buswidth,				\
+	}
+
+#define SPI_MEM_OP_DATA_OUT_DTR(__nbytes, __buf, __buswidth)	\
+	{							\
+		.dir = SPI_MEM_DATA_OUT,			\
+		.nbytes = __nbytes,				\
+		.buf.out = __buf,				\
+		.buswidth = __buswidth,				\
+		.dtr = 1,					\
 	}
 
 #define SPI_MEM_OP_NO_DATA	{ }
@@ -89,7 +130,6 @@ enum spi_mem_data_dir {
  * @dummy.dtr: whether the dummy bytes should be sent in DTR mode or not
  * @data.buswidth: number of IO lanes used to send/receive the data
  * @data.dtr: whether the data should be sent in DTR mode or not
- * @data.ecc: whether error correction is required or not
  * @data.dir: direction of the transfer
  * @data.nbytes: number of data bytes to send/receive. Can be zero if the
  *		 operation does not involve transferring data
@@ -120,7 +160,6 @@ struct spi_mem_op {
 	struct {
 		u8 buswidth;
 		u8 dtr : 1;
-		u8 ecc : 1;
 		enum spi_mem_data_dir dir;
 		unsigned int nbytes;
 		union {
@@ -225,7 +264,7 @@ static inline void *spi_mem_get_drvdata(struct spi_mem *mem)
 /**
  * struct spi_controller_mem_ops - SPI memory operations
  * @adjust_op_size: shrink the data xfer of an operation to match controller's
- *		    limitations (can be alignment or max RX/TX size
+ *		    limitations (can be alignment of max RX/TX size
  *		    limitations)
  * @supports_op: check if an operation is supported by the controller
  * @exec_op: execute a SPI memory operation
@@ -252,6 +291,12 @@ static inline void *spi_mem_get_drvdata(struct spi_mem *mem)
  *		  the currently mapped area), and the caller of
  *		  spi_mem_dirmap_write() is responsible for calling it again in
  *		  this case.
+ * @do_calibration: perform calibration needed for high SPI clock speed
+ *		    operation. Should be called after the SPI memory device has
+ *		    been completely initialized. The op passed should contain
+ *		    a template for the read operation used for the device so
+ *		    the controller can decide what type of calibration is
+ *		    required for this type of read.
  * @poll_status: poll memory device status until (status & mask) == match or
  *               when the timeout has expired. It fills the data buffer with
  *               the last status value.
@@ -279,6 +324,8 @@ struct spi_controller_mem_ops {
 			       u64 offs, size_t len, void *buf);
 	ssize_t (*dirmap_write)(struct spi_mem_dirmap_desc *desc,
 				u64 offs, size_t len, const void *buf);
+	void (*do_calibration)(struct spi_mem *mem,
+			       const struct spi_mem_op *op);
 	int (*poll_status)(struct spi_mem *mem,
 			   const struct spi_mem_op *op,
 			   u16 mask, u16 match,
@@ -286,19 +333,6 @@ struct spi_controller_mem_ops {
 			   unsigned long polling_rate_us,
 			   unsigned long timeout_ms);
 };
-
-/**
- * struct spi_controller_mem_caps - SPI memory controller capabilities
- * @dtr: Supports DTR operations
- * @ecc: Supports operations with error correction
- */
-struct spi_controller_mem_caps {
-	bool dtr;
-	bool ecc;
-};
-
-#define spi_mem_controller_is_capable(ctlr, cap)	\
-	((ctlr)->mem_caps && (ctlr)->mem_caps->cap)
 
 /**
  * struct spi_mem_driver - SPI memory driver
@@ -334,6 +368,10 @@ void spi_controller_dma_unmap_mem_op_data(struct spi_controller *ctlr,
 
 bool spi_mem_default_supports_op(struct spi_mem *mem,
 				 const struct spi_mem_op *op);
+
+bool spi_mem_dtr_supports_op(struct spi_mem *mem,
+			     const struct spi_mem_op *op);
+
 #else
 static inline int
 spi_controller_dma_map_mem_op_data(struct spi_controller *ctlr,
@@ -356,9 +394,17 @@ bool spi_mem_default_supports_op(struct spi_mem *mem,
 {
 	return false;
 }
+
+static inline
+bool spi_mem_dtr_supports_op(struct spi_mem *mem,
+			     const struct spi_mem_op *op)
+{
+	return false;
+}
 #endif /* CONFIG_SPI_MEM */
 
 int spi_mem_adjust_op_size(struct spi_mem *mem, struct spi_mem_op *op);
+int spi_mem_do_calibration(struct spi_mem *mem, const struct spi_mem_op *op);
 
 bool spi_mem_supports_op(struct spi_mem *mem,
 			 const struct spi_mem_op *op);

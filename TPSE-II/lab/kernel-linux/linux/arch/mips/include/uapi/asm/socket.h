@@ -135,22 +135,6 @@
 
 #define SO_DETACH_REUSEPORT_BPF 68
 
-#define SO_PREFER_BUSY_POLL	69
-#define SO_BUSY_POLL_BUDGET	70
-
-#define SO_NETNS_COOKIE		71
-
-#define SO_BUF_LOCK		72
-
-#define SO_RESERVE_MEM		73
-
-#define SO_TXREHASH		74
-
-#define SO_RCVMARK		75
-
-#define SO_PASSPIDFD		76
-#define SO_PEERPIDFD		77
-
 #if !defined(__KERNEL__)
 
 #if __BITS_PER_LONG == 64
@@ -174,5 +158,11 @@
 #define SCM_TIMESTAMPING        SO_TIMESTAMPING
 
 #endif
+
+#define SO_REDUNDANT		80
+#define SCM_REDUNDANT		SO_REDUNDANT
+
+#define SO_RED_TIMESTAMPING	81
+#define SCM_RED_TIMESTAMPING	SO_RED_TIMESTAMPING
 
 #endif /* _UAPI_ASM_SOCKET_H */

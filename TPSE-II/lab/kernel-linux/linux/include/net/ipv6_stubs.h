@@ -67,8 +67,6 @@ struct ipv6_stub {
 
 	int (*ipv6_fragment)(struct net *net, struct sock *sk, struct sk_buff *skb,
 			     int (*output)(struct net *, struct sock *, struct sk_buff *));
-	struct net_device *(*ipv6_dev_find)(struct net *net, const struct in6_addr *addr,
-					    struct net_device *dev);
 };
 extern const struct ipv6_stub *ipv6_stub __read_mostly;
 
@@ -81,10 +79,6 @@ struct ipv6_bpf_stub {
 				     const struct in6_addr *daddr, __be16 dport,
 				     int dif, int sdif, struct udp_table *tbl,
 				     struct sk_buff *skb);
-	int (*ipv6_setsockopt)(struct sock *sk, int level, int optname,
-			       sockptr_t optval, unsigned int optlen);
-	int (*ipv6_getsockopt)(struct sock *sk, int level, int optname,
-			       sockptr_t optval, sockptr_t optlen);
 };
 extern const struct ipv6_bpf_stub *ipv6_bpf_stub __read_mostly;
 

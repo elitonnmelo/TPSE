@@ -1,19 +1,20 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Functions to access TPS65219 Power Management IC.
+ * linux/mfd/tps65219.h
+ *
+ * Functions to access TPS65219 power management chip.
  *
  * Copyright (C) 2022 BayLibre Incorporated - https://www.baylibre.com/
  */
 
-#ifndef MFD_TPS65219_H
-#define MFD_TPS65219_H
+#ifndef __LINUX_MFD_TPS65219_H
+#define __LINUX_MFD_TPS65219_H
 
-#include <linux/bitops.h>
-#include <linux/notifier.h>
+#include <linux/i2c.h>
 #include <linux/regulator/driver.h>
-
-struct regmap;
-struct regmap_irq_chip_data;
+#include <linux/regulator/machine.h>
+#include <linux/bitops.h>
+#include <linux/regmap.h>
 
 #define TPS65219_1V35					1350000
 #define TPS65219_1V8					1800000
@@ -81,15 +82,6 @@ struct regmap_irq_chip_data;
 #define TPS65219_REG_INT_RV				0x31
 #define TPS65219_REG_INT_TIMEOUT_RV_SD			0x32
 #define TPS65219_REG_INT_PB				0x33
-
-#define TPS65219_REG_INT_LDO_3_4_POS			0
-#define TPS65219_REG_INT_LDO_1_2_POS			1
-#define TPS65219_REG_INT_BUCK_3_POS			2
-#define TPS65219_REG_INT_BUCK_1_2_POS			3
-#define TPS65219_REG_INT_SYS_POS			4
-#define TPS65219_REG_INT_RV_POS				5
-#define TPS65219_REG_INT_TO_RV_POS			6
-#define TPS65219_REG_INT_PB_POS				7
 
 #define TPS65219_REG_USER_NVM_CMD			0x34
 #define TPS65219_REG_POWER_UP_STATUS			0x35
@@ -218,18 +210,46 @@ struct regmap_irq_chip_data;
 #define TPS65219_INT_LDO4_RV_SD_MASK			BIT(6)
 #define TPS65219_INT_TIMEOUT_MASK			BIT(7)
 /* Power Button */
-#define TPS65219_INT_PB_FALLING_EDGE_DETECT_MASK	BIT(0)
-#define TPS65219_INT_PB_RISING_EDGE_DETECT_MASK		BIT(1)
+#define TPS65219_INT_PB_FALLING_EDGE_DET_MASK		BIT(0)
+#define TPS65219_INT_PB_RISING_EDGE_DET_MASK		BIT(1)
 #define TPS65219_INT_PB_REAL_TIME_STATUS_MASK		BIT(2)
 
-#define TPS65219_PB_POS					7
-#define TPS65219_TO_RV_POS				6
-#define TPS65219_RV_POS					5
-#define TPS65219_SYS_POS				4
-#define TPS65219_BUCK_1_2_POS				3
-#define TPS65219_BUCK_3_POS				2
-#define TPS65219_LDO_1_2_POS				1
-#define TPS65219_LDO_3_4_POS				0
+/* Masks for main IRQ register bits */
+enum {
+	TPS65219_INT_TIMEOUT_RV_SD,
+#define TPS65219_INT_TIMEOUT_RV_SD_MASK BIT(TPS65219_INT_TIMEOUT_RV_SD)
+	TPS65219_INT_RV,
+#define TPS65219_INT_RV_MASK BIT(TPS65219_INT_RV)
+	TPS65219_INT_SYSTEM,
+#define TPS65219_INT_SYSTEM_MASK BIT(TPS65219_INT_SYSTEM)
+	TPS65219_INT_BUCK_1_2,
+#define TPS65219_INT_BUCK_1_2_MASK BIT(TPS65219_INT_BUCK_1_2)
+	TPS65219_INT_BUCK_3,
+#define TPS65219_INT_BUCK_3_MASK BIT(TPS65219_INT_BUCK_3)
+	TPS65219_INT_LDO_1_2,
+#define TPS65219_INT_LDO_1_2_MASK BIT(TPS65219_INT_LDO_1_2)
+	TPS65219_INT_LDO_3_4,
+#define TPS65219_INT_LDO_3_4_MASK BIT(TPS65219_LDO_3_4)
+	TPS65219_INT_PB,
+#define TPS65219_INT_PB_MASK BIT(TPS65219_INT_PB)
+};
+
+/* Timeout Residual Voltage Shutdown */
+#define TPS65219_TO_RV_POS 6
+/* Residual Voltage */
+#define TPS65219_RV_POS 5
+/* System */
+#define TPS65219_SYS_POS 4
+/* Buck 1-2 */
+#define TPS65219_BUCK_1_2_POS 3
+/* Buck 3 */
+#define TPS65219_BUCK_3_POS 2
+/* LDO 1-2 */
+#define TPS65219_LDO_1_2_POS 1
+/* LDO 3-4 */
+#define TPS65219_LDO_3_4_POS 0
+/* Power Button */
+#define TPS65219_PB_POS 7
 
 /* IRQs */
 enum {
@@ -304,6 +324,8 @@ enum tps65219_regulator_id {
 	TPS65219_LDO_4,
 };
 
+#define TPS65219_MAX_REG_ID		TPS65219_LDO_4
+
 /* Number of step-down converters available */
 #define TPS65219_NUM_DCDC		3
 /* Number of LDO voltage regulators available */
@@ -328,18 +350,15 @@ enum tps65219_irqs {
  * struct tps65219 - tps65219 sub-driver chip access routines
  *
  * Device data may be used to access the TPS65219 chip
- *
- * @dev: MFD device
- * @regmap: Regmap for accessing the device registers
- * @irq_data: Regmap irq data used for the irq chip
- * @nb: notifier block for the restart handler
  */
 struct tps65219 {
 	struct device *dev;
-	struct regmap *regmap;
-
+	unsigned int id;
+	int irq;
 	struct regmap_irq_chip_data *irq_data;
+	struct regulator_desc desc[TPS65219_NUM_REGULATOR];
+	struct regmap *regmap;
 	struct notifier_block nb;
 };
 
-#endif /* MFD_TPS65219_H */
+#endif /*  __LINUX_MFD_TPS65219_H */

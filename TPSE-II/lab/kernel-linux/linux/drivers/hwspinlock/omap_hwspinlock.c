@@ -94,9 +94,11 @@ static int omap_hwspinlock_probe(struct platform_device *pdev)
 	 * the module SYSSTATUS register
 	 */
 	pm_runtime_enable(&pdev->dev);
-	ret = pm_runtime_resume_and_get(&pdev->dev);
-	if (ret < 0)
+	ret = pm_runtime_get_sync(&pdev->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(&pdev->dev);
 		goto runtime_err;
+	}
 
 	/* Determine number of locks */
 	i = readl(io_base + SYSSTATUS_OFFSET);
@@ -174,7 +176,7 @@ static struct platform_driver omap_hwspinlock_driver = {
 	.remove		= omap_hwspinlock_remove,
 	.driver		= {
 		.name	= "omap_hwspinlock",
-		.of_match_table = omap_hwspinlock_of_match,
+		.of_match_table = of_match_ptr(omap_hwspinlock_of_match),
 	},
 };
 

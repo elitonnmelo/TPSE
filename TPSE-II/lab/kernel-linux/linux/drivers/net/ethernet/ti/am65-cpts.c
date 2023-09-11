@@ -324,9 +324,11 @@ static int am65_cpts_fifo_read(struct am65_cpts *cpts)
 		case AM65_CPTS_EV_HW:
 			pevent.index = am65_cpts_event_get_port(event) - 1;
 			pevent.timestamp = event->timestamp;
-			if (cpts->pps_enabled && pevent.index == cpts->pps_hw_ts_idx) {
+			if (cpts->pps_enabled &&
+			    pevent.index == cpts->pps_hw_ts_idx) {
 				pevent.type = PTP_CLOCK_PPSUSR;
-				pevent.pps_times.ts_real = ns_to_timespec64(pevent.timestamp);
+				pevent.pps_times.ts_real =
+					ns_to_timespec64(pevent.timestamp);
 			} else {
 				pevent.type = PTP_CLOCK_EXTTS;
 			}
@@ -403,11 +405,10 @@ static irqreturn_t am65_cpts_interrupt(int irq, void *dev_id)
 }
 
 /* PTP clock operations */
-static int am65_cpts_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
+static int am65_cpts_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
 {
 	struct am65_cpts *cpts = container_of(ptp, struct am65_cpts, ptp_info);
 	u32 estf_ctrl_val = 0, estf_ppm_hi = 0, estf_ppm_low = 0;
-	s32 ppb = scaled_ppm_to_ppb(scaled_ppm);
 	int pps_index = cpts->pps_genf_idx;
 	u64 adj_period, pps_adj_period;
 	u32 ctrl_val, ppm_hi, ppm_low;
@@ -565,13 +566,11 @@ static void am65_cpts_extts_enable_hw(struct am65_cpts *cpts, u32 index, int on)
 
 static int am65_cpts_extts_enable(struct am65_cpts *cpts, u32 index, int on)
 {
-	if (index >= cpts->ptp_info.n_ext_ts)
-		return -ENXIO;
 
 	if (cpts->pps_present && index == cpts->pps_hw_ts_idx)
 		return -EINVAL;
 
-	if (((cpts->hw_ts_enable & BIT(index)) >> index) == on)
+	if (!!(cpts->hw_ts_enable & BIT(index)) == !!on)
 		return 0;
 
 	mutex_lock(&cpts->ptp_clk_lock);
@@ -665,9 +664,6 @@ static void am65_cpts_perout_enable_hw(struct am65_cpts *cpts,
 static int am65_cpts_perout_enable(struct am65_cpts *cpts,
 				   struct ptp_perout_request *req, int on)
 {
-	if (req->index >= cpts->ptp_info.n_per_out)
-		return -ENXIO;
-
 	if (cpts->pps_present && req->index == cpts->pps_genf_idx)
 		return -EINVAL;
 
@@ -686,9 +682,9 @@ static int am65_cpts_perout_enable(struct am65_cpts *cpts,
 
 static int am65_cpts_pps_enable(struct am65_cpts *cpts, int on)
 {
-	int ret = 0;
-	struct timespec64 ts;
 	struct ptp_clock_request rq;
+	struct timespec64 ts;
+	int ret = 0;
 	u64 ns;
 
 	if (!cpts->pps_present)
@@ -750,7 +746,7 @@ static long am65_cpts_ts_work(struct ptp_clock_info *ptp);
 static struct ptp_clock_info am65_ptp_info = {
 	.owner		= THIS_MODULE,
 	.name		= "CTPS timer",
-	.adjfine	= am65_cpts_ptp_adjfine,
+	.adjfreq	= am65_cpts_ptp_adjfreq,
 	.adjtime	= am65_cpts_ptp_adjtime,
 	.gettimex64	= am65_cpts_ptp_gettimex,
 	.settime64	= am65_cpts_ptp_settime,
@@ -1052,19 +1048,8 @@ static int am65_cpts_of_parse(struct am65_cpts *cpts, struct device_node *node)
 
 	if (!of_property_read_u32_array(node, "ti,pps", prop, 2)) {
 		cpts->pps_present = true;
-
-		if (prop[0] > 7) {
-			dev_err(cpts->dev, "invalid HWx_TS_PUSH index: %u provided\n", prop[0]);
-			cpts->pps_present = false;
-		}
-		if (prop[1] > 1) {
-			dev_err(cpts->dev, "invalid GENFy index: %u provided\n", prop[1]);
-			cpts->pps_present = false;
-		}
-		if (cpts->pps_present) {
-			cpts->pps_hw_ts_idx = prop[0];
-			cpts->pps_genf_idx = prop[1];
-		}
+		cpts->pps_hw_ts_idx = prop[0];
+		cpts->pps_genf_idx = prop[1];
 	}
 
 	return cpts_of_mux_clk_setup(cpts, node);
@@ -1094,7 +1079,9 @@ struct am65_cpts *am65_cpts_create(struct device *dev, void __iomem *regs,
 	cpts->irq = of_irq_get_byname(node, "cpts");
 	if (cpts->irq <= 0) {
 		ret = cpts->irq ?: -ENXIO;
-		dev_err_probe(dev, ret, "Failed to get IRQ number\n");
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev, "Failed to get IRQ number (err = %d)\n",
+				ret);
 		return ERR_PTR(ret);
 	}
 
@@ -1114,7 +1101,8 @@ struct am65_cpts *am65_cpts_create(struct device *dev, void __iomem *regs,
 	cpts->refclk = devm_get_clk_from_child(dev, node, "cpts");
 	if (IS_ERR(cpts->refclk)) {
 		ret = PTR_ERR(cpts->refclk);
-		dev_err_probe(dev, ret, "Failed to get refclk\n");
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev, "Failed to get refclk %d\n", ret);
 		return ERR_PTR(ret);
 	}
 
@@ -1249,9 +1237,11 @@ static int am65_cpts_probe(struct platform_device *pdev)
 	struct device_node *node = pdev->dev.of_node;
 	struct device *dev = &pdev->dev;
 	struct am65_cpts *cpts;
+	struct resource *res;
 	void __iomem *base;
 
-	base = devm_platform_ioremap_resource_byname(pdev, "cpts");
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "cpts");
+	base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 

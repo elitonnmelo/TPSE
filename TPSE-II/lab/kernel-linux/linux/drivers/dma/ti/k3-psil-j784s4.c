@@ -253,7 +253,7 @@ static struct psil_ep j784s4_src_ep_map[] = {
 	PSIL_PDMA_XY_TR(0x7401),
 	PSIL_PDMA_XY_TR(0x7402),
 	PSIL_PDMA_XY_TR(0x7403),
-	/* MCU_SA2UL */
+	/* SA2UL */
 	PSIL_SA2UL(0x7500, 0),
 	PSIL_SA2UL(0x7501, 0),
 	PSIL_SA2UL(0x7502, 0),
@@ -262,6 +262,15 @@ static struct psil_ep j784s4_src_ep_map[] = {
 
 /* PSI-L destination thread IDs, used for TX (DMA_MEM_TO_DEV) */
 static struct psil_ep j784s4_dst_ep_map[] = {
+	/* MCU_CPSW0 */
+	PSIL_ETHERNET(0xf000),
+	PSIL_ETHERNET(0xf001),
+	PSIL_ETHERNET(0xf002),
+	PSIL_ETHERNET(0xf003),
+	PSIL_ETHERNET(0xf004),
+	PSIL_ETHERNET(0xf005),
+	PSIL_ETHERNET(0xf006),
+	PSIL_ETHERNET(0xf007),
 	/* MAIN_CPSW2G */
 	PSIL_ETHERNET(0xc640),
 	PSIL_ETHERNET(0xc641),
@@ -283,6 +292,9 @@ static struct psil_ep j784s4_dst_ep_map[] = {
 	/* MAIN-SA2UL */
 	PSIL_SA2UL(0xca40, 1),
 	PSIL_SA2UL(0xca41, 1),
+	/* SA2UL */
+	PSIL_SA2UL(0xf500, 1),
+	PSIL_SA2UL(0xf501, 1),
 	/* PDMA_SPI_G0 - SPI0-3 */
 	PSIL_PDMA_XY_PKT(0xc600),
 	PSIL_PDMA_XY_PKT(0xc601),
@@ -317,15 +329,6 @@ static struct psil_ep j784s4_dst_ep_map[] = {
 	PSIL_PDMA_XY_PKT(0xc62d),
 	PSIL_PDMA_XY_PKT(0xc62e),
 	PSIL_PDMA_XY_PKT(0xc62f),
-	/* MCU_CPSW0 */
-	PSIL_ETHERNET(0xf000),
-	PSIL_ETHERNET(0xf001),
-	PSIL_ETHERNET(0xf002),
-	PSIL_ETHERNET(0xf003),
-	PSIL_ETHERNET(0xf004),
-	PSIL_ETHERNET(0xf005),
-	PSIL_ETHERNET(0xf006),
-	PSIL_ETHERNET(0xf007),
 	/* MCU_PDMA_MISC_G0 - SPI0 */
 	PSIL_PDMA_XY_PKT(0xf100),
 	PSIL_PDMA_XY_PKT(0xf101),
@@ -340,9 +343,6 @@ static struct psil_ep j784s4_dst_ep_map[] = {
 	PSIL_PDMA_XY_PKT(0xf205),
 	PSIL_PDMA_XY_PKT(0xf206),
 	PSIL_PDMA_XY_PKT(0xf207),
-	/* MCU_SA2UL */
-	PSIL_SA2UL(0xf500, 1),
-	PSIL_SA2UL(0xf501, 1),
 };
 
 struct psil_ep_map j784s4_ep_map = {

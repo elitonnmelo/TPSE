@@ -31,23 +31,26 @@ description: |
   including a complete example,
     Documentation/devicetree/bindings/soc/ti/ti,pruss.yaml
 
+allOf:
+  - $ref: /schemas/interrupts.yaml#
+
 properties:
   compatible:
     enum:
       - ti,am3356-pru   # for AM335x SoC family (AM3356+ SoCs only)
       - ti,am4376-pru   # for AM437x SoC family (AM4376+ SoCs only)
       - ti,am5728-pru   # for AM57xx SoC family
-      - ti,am625-pru    # for PRUs in K3 AM62x SoC family
-      - ti,am642-pru    # for PRUs in K3 AM64x SoC family
-      - ti,am642-rtu    # for RTUs in K3 AM64x SoC family
-      - ti,am642-tx-pru # for Tx_PRUs in K3 AM64x SoC family
+      - ti,k2g-pru      # for 66AK2G SoC family
       - ti,am654-pru    # for PRUs in K3 AM65x SoC family
       - ti,am654-rtu    # for RTUs in K3 AM65x SoC family
       - ti,am654-tx-pru # for Tx_PRUs in K3 AM65x SR2.0 SoCs
       - ti,j721e-pru    # for PRUs in K3 J721E SoC family
       - ti,j721e-rtu    # for RTUs in K3 J721E SoC family
       - ti,j721e-tx-pru # for Tx_PRUs in K3 J721E SoC family
-      - ti,k2g-pru      # for 66AK2G SoC family
+      - ti,am642-pru    # for PRUs in K3 AM64x SoC family
+      - ti,am642-rtu    # for RTUs in K3 AM64x SoC family
+      - ti,am642-tx-pru # for Tx_PRUs in K3 AM64x SoC family
+      - ti,am625-pru    # for PRUs in K3 AM62x SoC family
 
   reg:
     items:
@@ -65,6 +68,23 @@ properties:
     description: |
       Should contain the name of the default firmware image
       file located on the firmware search path.
+
+# Optional Properties:
+# --------------------
+# The virtio based communication between the MPU and a PRU core _requires_ the
+# set of 'interrupt-parent', 'interrupts' and 'interrupt-names' properties.
+
+  interrupts:
+    description: |
+      Array of interrupt specifiers if using PRU system events for IPC
+      signalling between host and a PRU core. This property should match
+      with the PRU system event used in the corresponding firmware image.
+    items:
+      - description: PRU event number used to receive virtqueue events
+
+  interrupt-names:
+    items:
+      - const: vring # for PRU to HOST virtqueue signalling
 
 if:
   properties:
@@ -93,6 +113,9 @@ else:
     properties:
       $nodename:
         pattern: "^pru@[0-9a-f]+$"
+
+dependencies:
+  interrupts: [interrupt-names, interrupt-parent]
 
 required:
   - compatible
@@ -132,6 +155,9 @@ examples:
                 <0x22400 0x100>;
           reg-names = "iram", "control", "debug";
           firmware-name = "am335x-pru0-fw";
+          interrupt-parent = <&pruss_intc>;
+          interrupts = <16 2 2>;
+          interrupt-names = "vring";
         };
 
         pru1: pru@38000 {
@@ -141,6 +167,9 @@ examples:
                 <0x24400 0x100>;
           reg-names = "iram", "control", "debug";
           firmware-name = "am335x-pru1-fw";
+          interrupt-parent = <&pruss_intc>;
+          interrupts = <18 3 3>;
+          interrupt-names = "vring";
         };
       };
     };

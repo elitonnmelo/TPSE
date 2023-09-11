@@ -2,7 +2,7 @@
 /*
  * PRU-ICSS platform driver for various TI SoCs
  *
- * Copyright (C) 2014-2020 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2014-2021 Texas Instruments Incorporated - https://www.ti.com/
  * Author(s):
  *	Suman Anna <s-anna@ti.com>
  *	Andrew F. Davis <afd@ti.com>
@@ -21,16 +21,20 @@
 #include <linux/regmap.h>
 #include <linux/remoteproc.h>
 #include <linux/slab.h>
-#include "pruss.h"
+
+#define SYSCFG_STANDBY_INIT	BIT(4)
+#define SYSCFG_SUB_MWAIT_READY	BIT(5)
 
 /**
  * struct pruss_private_data - PRUSS driver private data
  * @has_no_sharedram: flag to indicate the absence of PRUSS Shared Data RAM
  * @has_core_mux_clock: flag to indicate the presence of PRUSS core clock
+ * @has_ocp_syscfg: flag to indicate if OCP SYSCFG is present
  */
 struct pruss_private_data {
 	bool has_no_sharedram;
 	bool has_core_mux_clock;
+	bool has_ocp_syscfg;
 };
 
 /**
@@ -41,10 +45,6 @@ struct pruss_private_data {
  * PRU remote processor. This function increments the pruss device's refcount,
  * so always use pruss_put() to decrement it back once pruss isn't needed
  * anymore.
- *
- * This API doesn't check if @rproc is valid or not. It is expected the caller
- * will have done a pru_rproc_get() on @rproc, before calling this API to make
- * sure that @rproc is valid.
  *
  * Return: pruss handle on success, and an ERR_PTR on failure using one
  * of the following error values
@@ -104,8 +104,8 @@ EXPORT_SYMBOL_GPL(pruss_put);
  * memory region until released using the pruss_release_mem_region()
  * API.
  *
- * Return: 0 if requested memory region is available (in such case pointer to
- * memory region is returned via @region), an error otherwise
+ * Return: 0 if requested memory region is available with the memory region
+ * values returned in memory pointed by @region, an error otherwise
  */
 int pruss_request_mem_region(struct pruss *pruss, enum pruss_mem mem_id,
 			     struct pruss_mem_region *region)
@@ -162,6 +162,7 @@ int pruss_release_mem_region(struct pruss *pruss,
 	}
 
 	pruss->mem_in_use[id] = NULL;
+	memset(region, 0, sizeof(*region));
 
 	mutex_unlock(&pruss->lock);
 
@@ -170,119 +171,111 @@ int pruss_release_mem_region(struct pruss *pruss,
 EXPORT_SYMBOL_GPL(pruss_release_mem_region);
 
 /**
- * pruss_cfg_get_gpmux() - get the current GPMUX value for a PRU device
- * @pruss: pruss instance
- * @pru_id: PRU identifier (0-1)
- * @mux: pointer to store the current mux value into
+ * pruss_cfg_read() - read a PRUSS CFG sub-module register
+ * @pruss: the pruss instance handle
+ * @reg: register offset within the CFG sub-module
+ * @val: pointer to return the value in
+ *
+ * Reads a given register within the PRUSS CFG sub-module and
+ * returns it through the passed-in @val pointer
  *
  * Return: 0 on success, or an error code otherwise
  */
-int pruss_cfg_get_gpmux(struct pruss *pruss, enum pruss_pru_id pru_id, u8 *mux)
+int pruss_cfg_read(struct pruss *pruss, unsigned int reg, unsigned int *val)
+{
+	if (IS_ERR_OR_NULL(pruss))
+		return -EINVAL;
+
+	return regmap_read(pruss->cfg_regmap, reg, val);
+}
+EXPORT_SYMBOL_GPL(pruss_cfg_read);
+
+/**
+ * pruss_cfg_update() - configure a PRUSS CFG sub-module register
+ * @pruss: the pruss instance handle
+ * @reg: register offset within the CFG sub-module
+ * @mask: bit mask to use for programming the @val
+ * @val: value to write
+ *
+ * Programs a given register within the PRUSS CFG sub-module
+ *
+ * Return: 0 on success, or an error code otherwise
+ */
+int pruss_cfg_update(struct pruss *pruss, unsigned int reg,
+		     unsigned int mask, unsigned int val)
+{
+	if (IS_ERR_OR_NULL(pruss))
+		return -EINVAL;
+
+	return regmap_update_bits(pruss->cfg_regmap, reg, mask, val);
+}
+EXPORT_SYMBOL_GPL(pruss_cfg_update);
+
+/**
+ * pruss_cfg_ocp_master_ports() - configure PRUSS OCP master ports
+ * @pruss: the pruss instance handle
+ * @enable: set to true for enabling or false for disabling the OCP master ports
+ *
+ * This function programs the PRUSS_SYSCFG.STANDBY_INIT bit either to enable or
+ * disable the OCP master ports (applicable only on SoCs using OCP interconnect
+ * like the OMAP family). Clearing the bit achieves dual functionalities - one
+ * is to deassert the MStandby signal to the device PRCM, and the other is to
+ * enable OCP master ports to allow accesses outside of the PRU-ICSS. The
+ * function has to wait for the PRCM to acknowledge through the monitoring of
+ * the PRUSS_SYSCFG.SUB_MWAIT bit when enabling master ports. Setting the bit
+ * disables the master access, and also signals the PRCM that the PRUSS is ready
+ * for Standby.
+ *
+ * Return: 0 on success, or an error code otherwise. ETIMEDOUT is returned
+ * when the ready-state fails.
+ */
+int pruss_cfg_ocp_master_ports(struct pruss *pruss, bool enable)
 {
 	int ret;
-	u32 val;
+	u32 syscfg_val, i;
+	const struct pruss_private_data *data;
 
-	if (pru_id >= PRUSS_NUM_PRUS || !mux)
+	if (IS_ERR_OR_NULL(pruss))
 		return -EINVAL;
 
-	ret = pruss_cfg_read(pruss, PRUSS_CFG_GPCFG(pru_id), &val);
-	if (!ret)
-		*mux = (u8)((val & PRUSS_GPCFG_PRU_MUX_SEL_MASK) >>
-			    PRUSS_GPCFG_PRU_MUX_SEL_SHIFT);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(pruss_cfg_get_gpmux);
+	data = of_device_get_match_data(pruss->dev);
 
-/**
- * pruss_cfg_set_gpmux() - set the GPMUX value for a PRU device
- * @pruss: pruss instance
- * @pru_id: PRU identifier (0-1)
- * @mux: new mux value for PRU
- *
- * Return: 0 on success, or an error code otherwise
- */
-int pruss_cfg_set_gpmux(struct pruss *pruss, enum pruss_pru_id pru_id, u8 mux)
-{
-	if (mux >= PRUSS_GP_MUX_SEL_MAX ||
-	    pru_id >= PRUSS_NUM_PRUS)
-		return -EINVAL;
+	/* nothing to do on non OMAP-SoCs */
+	if (!data || !data->has_ocp_syscfg)
+		return 0;
 
-	return pruss_cfg_update(pruss, PRUSS_CFG_GPCFG(pru_id),
-				PRUSS_GPCFG_PRU_MUX_SEL_MASK,
-				(u32)mux << PRUSS_GPCFG_PRU_MUX_SEL_SHIFT);
-}
-EXPORT_SYMBOL_GPL(pruss_cfg_set_gpmux);
+	/* assert the MStandby signal during disable path */
+	if (!enable)
+		return pruss_cfg_update(pruss, PRUSS_CFG_SYSCFG,
+					SYSCFG_STANDBY_INIT,
+					SYSCFG_STANDBY_INIT);
 
-/**
- * pruss_cfg_gpimode() - set the GPI mode of the PRU
- * @pruss: the pruss instance handle
- * @pru_id: id of the PRU core within the PRUSS
- * @mode: GPI mode to set
- *
- * Sets the GPI mode for a given PRU by programming the
- * corresponding PRUSS_CFG_GPCFGx register
- *
- * Return: 0 on success, or an error code otherwise
- */
-int pruss_cfg_gpimode(struct pruss *pruss, enum pruss_pru_id pru_id,
-		      enum pruss_gpi_mode mode)
-{
-	if (pru_id >= PRUSS_NUM_PRUS || mode >= PRUSS_GPI_MODE_MAX)
-		return -EINVAL;
+	/* enable the OCP master ports and disable MStandby */
+	ret = pruss_cfg_update(pruss, PRUSS_CFG_SYSCFG, SYSCFG_STANDBY_INIT, 0);
+	if (ret)
+		return ret;
 
-	return pruss_cfg_update(pruss, PRUSS_CFG_GPCFG(pru_id),
-				PRUSS_GPCFG_PRU_GPI_MODE_MASK,
-				mode << PRUSS_GPCFG_PRU_GPI_MODE_SHIFT);
-}
-EXPORT_SYMBOL_GPL(pruss_cfg_gpimode);
+	/* wait till we are ready for transactions - delay is arbitrary */
+	for (i = 0; i < 10; i++) {
+		ret = pruss_cfg_read(pruss, PRUSS_CFG_SYSCFG, &syscfg_val);
+		if (ret)
+			goto disable;
 
-/**
- * pruss_cfg_miirt_enable() - Enable/disable MII RT Events
- * @pruss: the pruss instance
- * @enable: enable/disable
- *
- * Enable/disable the MII RT Events for the PRUSS.
- *
- * Return: 0 on success, or an error code otherwise
- */
-int pruss_cfg_miirt_enable(struct pruss *pruss, bool enable)
-{
-	u32 set = enable ? PRUSS_MII_RT_EVENT_EN : 0;
+		if (!(syscfg_val & SYSCFG_SUB_MWAIT_READY))
+			return 0;
 
-	return pruss_cfg_update(pruss, PRUSS_CFG_MII_RT,
-				PRUSS_MII_RT_EVENT_EN, set);
-}
-EXPORT_SYMBOL_GPL(pruss_cfg_miirt_enable);
-
-/**
- * pruss_cfg_xfr_enable() - Enable/disable XIN XOUT shift functionality
- * @pruss: the pruss instance
- * @pru_type: PRU core type identifier
- * @enable: enable/disable
- *
- * Return: 0 on success, or an error code otherwise
- */
-int pruss_cfg_xfr_enable(struct pruss *pruss, enum pru_type pru_type,
-			 bool enable)
-{
-	u32 mask, set;
-
-	switch (pru_type) {
-	case PRU_TYPE_PRU:
-		mask = PRUSS_SPP_XFER_SHIFT_EN;
-		break;
-	case PRU_TYPE_RTU:
-		mask = PRUSS_SPP_RTU_XFR_SHIFT_EN;
-		break;
-	default:
-		return -EINVAL;
+		udelay(5);
 	}
 
-	set = enable ? mask : 0;
+	dev_err(pruss->dev, "timeout waiting for SUB_MWAIT_READY\n");
+	ret = -ETIMEDOUT;
 
-	return pruss_cfg_update(pruss, PRUSS_CFG_SPP, mask, set);
+disable:
+	pruss_cfg_update(pruss, PRUSS_CFG_SYSCFG, SYSCFG_STANDBY_INIT,
+			 SYSCFG_STANDBY_INIT);
+	return ret;
 }
-EXPORT_SYMBOL_GPL(pruss_cfg_xfr_enable);
+EXPORT_SYMBOL_GPL(pruss_cfg_ocp_master_ports);
 
 static void pruss_of_free_clk_provider(void *data)
 {
@@ -290,11 +283,6 @@ static void pruss_of_free_clk_provider(void *data)
 
 	of_clk_del_provider(clk_mux_np);
 	of_node_put(clk_mux_np);
-}
-
-static void pruss_clk_unregister_mux(void *data)
-{
-	clk_unregister_mux(data);
 }
 
 static int pruss_clk_mux_setup(struct pruss *pruss, struct clk *clk_mux,
@@ -352,7 +340,8 @@ static int pruss_clk_mux_setup(struct pruss *pruss, struct clk *clk_mux,
 		goto put_clk_mux_np;
 	}
 
-	ret = devm_add_action_or_reset(dev, pruss_clk_unregister_mux, clk_mux);
+	ret = devm_add_action_or_reset(dev, (void(*)(void *))clk_unregister_mux,
+				       clk_mux);
 	if (ret) {
 		dev_err(dev, "failed to add clkmux unregister action %d", ret);
 		goto put_clk_mux_np;
@@ -538,9 +527,10 @@ static int pruss_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, pruss);
 
 	pm_runtime_enable(dev);
-	ret = pm_runtime_resume_and_get(dev);
+	ret = pm_runtime_get_sync(dev);
 	if (ret < 0) {
 		dev_err(dev, "couldn't enable module\n");
+		pm_runtime_put_noidle(dev);
 		goto rpm_disable;
 	}
 
@@ -578,10 +568,16 @@ static int pruss_remove(struct platform_device *pdev)
 /* instance-specific driver private data */
 static const struct pruss_private_data am437x_pruss1_data = {
 	.has_no_sharedram = false,
+	.has_ocp_syscfg = true,
 };
 
 static const struct pruss_private_data am437x_pruss0_data = {
 	.has_no_sharedram = true,
+	.has_ocp_syscfg = false,
+};
+
+static const struct pruss_private_data am33xx_am57xx_data = {
+	.has_ocp_syscfg = true,
 };
 
 static const struct pruss_private_data am65x_j721e_pruss_data = {
@@ -589,10 +585,10 @@ static const struct pruss_private_data am65x_j721e_pruss_data = {
 };
 
 static const struct of_device_id pruss_of_match[] = {
-	{ .compatible = "ti,am3356-pruss" },
+	{ .compatible = "ti,am3356-pruss", .data = &am33xx_am57xx_data },
 	{ .compatible = "ti,am4376-pruss0", .data = &am437x_pruss0_data, },
 	{ .compatible = "ti,am4376-pruss1", .data = &am437x_pruss1_data, },
-	{ .compatible = "ti,am5728-pruss" },
+	{ .compatible = "ti,am5728-pruss", .data = &am33xx_am57xx_data },
 	{ .compatible = "ti,k2g-pruss" },
 	{ .compatible = "ti,am654-icssg", .data = &am65x_j721e_pruss_data, },
 	{ .compatible = "ti,j721e-icssg", .data = &am65x_j721e_pruss_data, },

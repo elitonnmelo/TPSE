@@ -135,4 +135,4 @@ all the EPF devices are created and linked with the EPC device.
 						| interrupt_pin
 						| function
 
-[1] Documentation/PCI/endpoint/pci-endpoint.rst
+[1] :doc:`pci-endpoint`

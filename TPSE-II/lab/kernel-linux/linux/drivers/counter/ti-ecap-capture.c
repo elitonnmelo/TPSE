@@ -234,28 +234,25 @@ static int ecap_cnt_clk_get_freq(struct counter_device *counter,
 
 static int ecap_cnt_pol_read(struct counter_device *counter,
 			     struct counter_signal *signal,
-			     size_t idx, enum counter_signal_polarity *pol)
+			     size_t idx, u32 *pol)
 {
 	struct ecap_cnt_dev *ecap_dev = counter_priv(counter);
-	int bitval;
 
 	pm_runtime_get_sync(counter->parent);
-	bitval = regmap_test_bits(ecap_dev->regmap, ECAP_ECCTL_REG, ECAP_CAPPOL_BIT(idx));
+	*pol = regmap_test_bits(ecap_dev->regmap, ECAP_ECCTL_REG, ECAP_CAPPOL_BIT(idx));
 	pm_runtime_put_sync(counter->parent);
-
-	*pol = bitval ? COUNTER_SIGNAL_POLARITY_NEGATIVE : COUNTER_SIGNAL_POLARITY_POSITIVE;
 
 	return 0;
 }
 
 static int ecap_cnt_pol_write(struct counter_device *counter,
 			      struct counter_signal *signal,
-			      size_t idx, enum counter_signal_polarity pol)
+			      size_t idx, u32 pol)
 {
 	struct ecap_cnt_dev *ecap_dev = counter_priv(counter);
 
 	pm_runtime_get_sync(counter->parent);
-	if (pol == COUNTER_SIGNAL_POLARITY_NEGATIVE)
+	if (pol)
 		regmap_set_bits(ecap_dev->regmap, ECAP_ECCTL_REG, ECAP_CAPPOL_BIT(idx));
 	else
 		regmap_clear_bits(ecap_dev->regmap, ECAP_ECCTL_REG, ECAP_CAPPOL_BIT(idx));
@@ -284,6 +281,51 @@ static int ecap_cnt_cap_write(struct counter_device *counter,
 
 	return 0;
 }
+
+#define ECAP_POL_READ(i) int ecap_cnt_pol##i##_read(struct counter_device *counter,		\
+						    struct counter_signal *signal,		\
+						    u32 *pol)					\
+{												\
+	return ecap_cnt_pol_read(counter, signal, i, pol);					\
+}
+
+#define ECAP_POL_WRITE(i) int ecap_cnt_pol##i##_write(struct counter_device *counter,		\
+						      struct counter_signal *signal,		\
+						      u32 pol)					\
+{												\
+	return ecap_cnt_pol_write(counter, signal, i, pol);					\
+}
+
+#define ECAP_CAP_READ(i) int ecap_cnt_cap##i##_read(struct counter_device *counter,		\
+						    struct counter_count *count,		\
+						    u64 *cap)					\
+{												\
+	return ecap_cnt_cap_read(counter, count, i, cap);					\
+}
+
+#define ECAP_CAP_WRITE(i) int ecap_cnt_cap##i##_write(struct counter_device *counter,		\
+						      struct counter_count *count,		\
+						      u64 cap)					\
+{												\
+	return ecap_cnt_cap_write(counter, count, i, cap);					\
+}
+
+static inline ECAP_POL_READ(0)
+static inline ECAP_POL_READ(1)
+static inline ECAP_POL_READ(2)
+static inline ECAP_POL_READ(3)
+static inline ECAP_POL_WRITE(0)
+static inline ECAP_POL_WRITE(1)
+static inline ECAP_POL_WRITE(2)
+static inline ECAP_POL_WRITE(3)
+static inline ECAP_CAP_READ(0)
+static inline ECAP_CAP_READ(1)
+static inline ECAP_CAP_READ(2)
+static inline ECAP_CAP_READ(3)
+static inline ECAP_CAP_WRITE(0)
+static inline ECAP_CAP_WRITE(1)
+static inline ECAP_CAP_WRITE(2)
+static inline ECAP_CAP_WRITE(3)
 
 static int ecap_cnt_nb_ovf_read(struct counter_device *counter,
 				struct counter_count *count, u64 *val)
@@ -372,16 +414,22 @@ static struct counter_comp ecap_cnt_clock_ext[] = {
 	COUNTER_COMP_SIGNAL_U64("frequency", ecap_cnt_clk_get_freq, NULL),
 };
 
-static const enum counter_signal_polarity ecap_cnt_pol_avail[] = {
-	COUNTER_SIGNAL_POLARITY_POSITIVE,
-	COUNTER_SIGNAL_POLARITY_NEGATIVE,
+static const char *const ecap_cnt_pol_names[] = {
+	"positive",
+	"negative",
 };
 
-static DEFINE_COUNTER_AVAILABLE(ecap_cnt_pol_available, ecap_cnt_pol_avail);
-static DEFINE_COUNTER_ARRAY_POLARITY(ecap_cnt_pol_array, ecap_cnt_pol_available, ECAP_NB_CEVT);
+static DEFINE_COUNTER_ENUM(ecap_cnt_pol_avail, ecap_cnt_pol_names);
 
 static struct counter_comp ecap_cnt_signal_ext[] = {
-	COUNTER_COMP_ARRAY_POLARITY(ecap_cnt_pol_read, ecap_cnt_pol_write, ecap_cnt_pol_array),
+	COUNTER_COMP_SIGNAL_ENUM("polarity0", ecap_cnt_pol0_read,
+				 ecap_cnt_pol0_write, ecap_cnt_pol_avail),
+	COUNTER_COMP_SIGNAL_ENUM("polarity1", ecap_cnt_pol1_read,
+				 ecap_cnt_pol1_write, ecap_cnt_pol_avail),
+	COUNTER_COMP_SIGNAL_ENUM("polarity2", ecap_cnt_pol2_read,
+				 ecap_cnt_pol2_write, ecap_cnt_pol_avail),
+	COUNTER_COMP_SIGNAL_ENUM("polarity3", ecap_cnt_pol3_read,
+				 ecap_cnt_pol3_write, ecap_cnt_pol_avail),
 };
 
 static struct counter_signal ecap_cnt_signals[] = {
@@ -412,10 +460,11 @@ static struct counter_synapse ecap_cnt_synapses[] = {
 	},
 };
 
-static DEFINE_COUNTER_ARRAY_CAPTURE(ecap_cnt_cap_array, ECAP_NB_CEVT);
-
 static struct counter_comp ecap_cnt_count_ext[] = {
-	COUNTER_COMP_ARRAY_CAPTURE(ecap_cnt_cap_read, ecap_cnt_cap_write, ecap_cnt_cap_array),
+	COUNTER_COMP_COUNT_U64("capture0", ecap_cnt_cap0_read, ecap_cnt_cap0_write),
+	COUNTER_COMP_COUNT_U64("capture1", ecap_cnt_cap1_read, ecap_cnt_cap1_write),
+	COUNTER_COMP_COUNT_U64("capture2", ecap_cnt_cap2_read, ecap_cnt_cap2_write),
+	COUNTER_COMP_COUNT_U64("capture3", ecap_cnt_cap3_read, ecap_cnt_cap3_write),
 	COUNTER_COMP_COUNT_U64("num_overflows", ecap_cnt_nb_ovf_read, ecap_cnt_nb_ovf_write),
 	COUNTER_COMP_CEILING(ecap_cnt_ceiling_read, NULL),
 	COUNTER_COMP_ENABLE(ecap_cnt_enable_read, ecap_cnt_enable_write),
@@ -465,6 +514,11 @@ static irqreturn_t ecap_cnt_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+static void ecap_cnt_clk_disable(void *clk)
+{
+	clk_disable_unprepare(clk);
+}
+
 static void ecap_cnt_pm_disable(void *dev)
 {
 	pm_runtime_disable(dev);
@@ -480,8 +534,8 @@ static int ecap_cnt_probe(struct platform_device *pdev)
 	int ret;
 
 	counter_dev = devm_counter_alloc(dev, sizeof(*ecap_dev));
-	if (!counter_dev)
-		return -ENOMEM;
+	if (IS_ERR(counter_dev))
+		return PTR_ERR(counter_dev);
 
 	counter_dev->name = ECAP_DRV_NAME;
 	counter_dev->parent = dev;
@@ -495,9 +549,18 @@ static int ecap_cnt_probe(struct platform_device *pdev)
 
 	mutex_init(&ecap_dev->lock);
 
-	ecap_dev->clk = devm_clk_get_enabled(dev, "fck");
+	ecap_dev->clk = devm_clk_get(dev, "fck");
 	if (IS_ERR(ecap_dev->clk))
 		return dev_err_probe(dev, PTR_ERR(ecap_dev->clk), "failed to get clock\n");
+
+	ret = clk_prepare_enable(ecap_dev->clk);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to enable clock\n");
+
+	/* Register a cleanup callback to care for disabling clock */
+	ret = devm_add_action_or_reset(dev, ecap_cnt_clk_disable, ecap_dev->clk);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to add clk disable action\n");
 
 	clk_rate = clk_get_rate(ecap_dev->clk);
 	if (!clk_rate) {
@@ -548,7 +611,7 @@ static int ecap_cnt_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int ecap_cnt_suspend(struct device *dev)
+static __maybe_unused int ecap_cnt_suspend(struct device *dev)
 {
 	struct counter_device *counter_dev = dev_get_drvdata(dev);
 	struct ecap_cnt_dev *ecap_dev = counter_priv(counter_dev);
@@ -572,7 +635,7 @@ static int ecap_cnt_suspend(struct device *dev)
 	return 0;
 }
 
-static int ecap_cnt_resume(struct device *dev)
+static __maybe_unused int ecap_cnt_resume(struct device *dev)
 {
 	struct counter_device *counter_dev = dev_get_drvdata(dev);
 	struct ecap_cnt_dev *ecap_dev = counter_priv(counter_dev);
@@ -590,7 +653,7 @@ static int ecap_cnt_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(ecap_cnt_pm_ops, ecap_cnt_suspend, ecap_cnt_resume);
+static SIMPLE_DEV_PM_OPS(ecap_cnt_pm_ops, ecap_cnt_suspend, ecap_cnt_resume);
 
 static const struct of_device_id ecap_cnt_of_match[] = {
 	{ .compatible	= "ti,am62-ecap-capture" },
@@ -604,7 +667,7 @@ static struct platform_driver ecap_cnt_driver = {
 	.driver = {
 		.name = "ecap-capture",
 		.of_match_table = ecap_cnt_of_match,
-		.pm = pm_sleep_ptr(&ecap_cnt_pm_ops),
+		.pm = &ecap_cnt_pm_ops,
 	},
 };
 module_platform_driver(ecap_cnt_driver);
@@ -612,4 +675,3 @@ module_platform_driver(ecap_cnt_driver);
 MODULE_DESCRIPTION("ECAP Capture driver");
 MODULE_AUTHOR("Julien Panis <jpanis@baylibre.com>");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(COUNTER);

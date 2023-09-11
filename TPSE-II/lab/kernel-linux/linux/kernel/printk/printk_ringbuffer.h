@@ -75,7 +75,6 @@ struct prb_desc_ring {
 	struct printk_info	*infos;
 	atomic_long_t		head_id;
 	atomic_long_t		tail_id;
-	atomic_long_t		last_finalized_id;
 };
 
 /*
@@ -259,7 +258,6 @@ static struct printk_ringbuffer name = {							\
 		.infos		= &_##name##_infos[0],						\
 		.head_id	= ATOMIC_INIT(DESC0_ID(descbits)),				\
 		.tail_id	= ATOMIC_INIT(DESC0_ID(descbits)),				\
-		.last_finalized_id = ATOMIC_INIT(DESC0_ID(descbits)),				\
 	},											\
 	.text_data_ring = {									\
 		.size_bits	= (avgtextbits) + (descbits),					\
@@ -289,7 +287,7 @@ _DEFINE_PRINTKRB(name, descbits, avgtextbits, &_##name##_text[0])
 /* Writer Interface */
 
 /**
- * prb_rec_init_wr() - Initialize a buffer for writing records.
+ * prb_rec_init_wd() - Initialize a buffer for writing records.
  *
  * @r:             The record to initialize.
  * @text_buf_size: The needed text buffer size.

@@ -2,7 +2,7 @@
 /*
  * Device Tree Source for J784S4 SoC Family
  *
- * TRM (SPRUJ43 JULY 2022): https://www.ti.com/lit/zip/spruj52
+ * TRM (SPRUJ43 JULY 2022) : http://www.ti.com/lit/zip/spruj52
  *
  * Copyright (C) 2022 Texas Instruments Incorporated - https://www.ti.com/
  *
@@ -10,16 +10,18 @@
 
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/pinctrl/k3.h>
 #include <dt-bindings/soc/ti,sci_pm_domain.h>
 
-#include "k3-pinctrl.h"
-
 / {
+
 	model = "Texas Instruments K3 J784S4 SoC";
 	compatible = "ti,j784s4";
 	interrupt-parent = <&gic500>;
 	#address-cells = <2>;
 	#size-cells = <2>;
+
+	chosen { };
 
 	cpus {
 		#address-cells = <1>;
@@ -178,7 +180,6 @@
 	L2_0: l2-cache0 {
 		compatible = "cache";
 		cache-level = <2>;
-		cache-unified;
 		cache-size = <0x200000>;
 		cache-line-size = <64>;
 		cache-sets = <1024>;
@@ -188,7 +189,6 @@
 	L2_1: l2-cache1 {
 		compatible = "cache";
 		cache-level = <2>;
-		cache-unified;
 		cache-size = <0x200000>;
 		cache-line-size = <64>;
 		cache-sets = <1024>;
@@ -198,7 +198,6 @@
 	msmc_l3: l3-cache0 {
 		compatible = "cache";
 		cache-level = <3>;
-		cache-unified;
 	};
 
 	firmware {
@@ -234,9 +233,12 @@
 		ranges = <0x00 0x00100000 0x00 0x00100000 0x00 0x00020000>, /* ctrl mmr */
 			 <0x00 0x00600000 0x00 0x00600000 0x00 0x00031100>, /* GPIO */
 			 <0x00 0x01000000 0x00 0x01000000 0x00 0x0d000000>, /* Most peripherals */
-			 <0x00 0x0d000000 0x00 0x0d000000 0x00 0x01000000>, /* PCIe Core*/
+			 <0x00 0x0d000000 0x00 0x0d000000 0x00 0x01000000>, /* PCIe1 Core*/
+			 <0x00 0x0e800000 0x00 0x0e800000 0x00 0x01000000>, /* PCIe3 Core*/
 			 <0x00 0x10000000 0x00 0x10000000 0x00 0x08000000>, /* PCIe0 DAT0 */
 			 <0x00 0x18000000 0x00 0x18000000 0x00 0x08000000>, /* PCIe1 DAT0 */
+			 <0x44 0x00000000 0x44 0x00000000 0x00 0x08000000>, /* PCIe2 DAT0 */
+			 <0x44 0x10000000 0x44 0x10000000 0x00 0x08000000>, /* PCIe3 DAT0 */
 			 <0x00 0x64800000 0x00 0x64800000 0x00 0x0070c000>, /* C71_1 */
 			 <0x00 0x65800000 0x00 0x65800000 0x00 0x0070c000>, /* C71_2 */
 			 <0x00 0x66800000 0x00 0x66800000 0x00 0x0070c000>, /* C71_3 */
@@ -245,6 +247,7 @@
 			 <0x00 0x70000000 0x00 0x70000000 0x00 0x00400000>, /* MSMC RAM */
 			 <0x00 0x30000000 0x00 0x30000000 0x00 0x0c400000>, /* MAIN NAVSS */
 			 <0x41 0x00000000 0x41 0x00000000 0x01 0x00000000>, /* PCIe1 DAT1 */
+			 <0x43 0x00000000 0x43 0x00000000 0x01 0x00000000>, /* PCIe3 DAT1 */
 			 <0x4e 0x20000000 0x4e 0x20000000 0x00 0x00080000>, /* GPU */
 
 			 /* MCUSS_WKUP Range */

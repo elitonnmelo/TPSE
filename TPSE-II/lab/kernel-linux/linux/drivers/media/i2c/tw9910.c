@@ -928,7 +928,8 @@ static const struct v4l2_subdev_ops tw9910_subdev_ops = {
  * i2c_driver function
  */
 
-static int tw9910_probe(struct i2c_client *client)
+static int tw9910_probe(struct i2c_client *client,
+			const struct i2c_device_id *did)
 
 {
 	struct tw9910_priv		*priv;
@@ -992,7 +993,7 @@ error_clk_put:
 	return ret;
 }
 
-static void tw9910_remove(struct i2c_client *client)
+static int tw9910_remove(struct i2c_client *client)
 {
 	struct tw9910_priv *priv = to_tw9910(client);
 
@@ -1000,6 +1001,8 @@ static void tw9910_remove(struct i2c_client *client)
 		gpiod_put(priv->pdn_gpio);
 	clk_put(priv->clk);
 	v4l2_async_unregister_subdev(&priv->subdev);
+
+	return 0;
 }
 
 static const struct i2c_device_id tw9910_id[] = {

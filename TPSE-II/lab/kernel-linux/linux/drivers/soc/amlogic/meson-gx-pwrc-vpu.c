@@ -14,7 +14,6 @@
 #include <linux/of_device.h>
 #include <linux/reset.h>
 #include <linux/clk.h>
-#include <linux/module.h>
 
 /* AO Offsets */
 
@@ -273,7 +272,6 @@ static int meson_gx_pwrc_vpu_probe(struct platform_device *pdev)
 	const struct meson_gx_pwrc_vpu *vpu_pd_match;
 	struct regmap *regmap_ao, *regmap_hhi;
 	struct meson_gx_pwrc_vpu *vpu_pd;
-	struct device_node *parent_np;
 	struct reset_control *rstc;
 	struct clk *vpu_clk;
 	struct clk *vapb_clk;
@@ -292,9 +290,7 @@ static int meson_gx_pwrc_vpu_probe(struct platform_device *pdev)
 
 	memcpy(vpu_pd, vpu_pd_match, sizeof(*vpu_pd));
 
-	parent_np = of_get_parent(pdev->dev.of_node);
-	regmap_ao = syscon_node_to_regmap(parent_np);
-	of_node_put(parent_np);
+	regmap_ao = syscon_node_to_regmap(of_get_parent(pdev->dev.of_node));
 	if (IS_ERR(regmap_ao)) {
 		dev_err(&pdev->dev, "failed to get regmap\n");
 		return PTR_ERR(regmap_ao);
@@ -307,10 +303,12 @@ static int meson_gx_pwrc_vpu_probe(struct platform_device *pdev)
 		return PTR_ERR(regmap_hhi);
 	}
 
-	rstc = devm_reset_control_array_get_exclusive(&pdev->dev);
-	if (IS_ERR(rstc))
-		return dev_err_probe(&pdev->dev, PTR_ERR(rstc),
-				     "failed to get reset lines\n");
+	rstc = devm_reset_control_array_get(&pdev->dev, false, false);
+	if (IS_ERR(rstc)) {
+		if (PTR_ERR(rstc) != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "failed to get reset lines\n");
+		return PTR_ERR(rstc);
+	}
 
 	vpu_clk = devm_clk_get(&pdev->dev, "vpu");
 	if (IS_ERR(vpu_clk)) {
@@ -366,7 +364,6 @@ static const struct of_device_id meson_gx_pwrc_vpu_match_table[] = {
 	},
 	{ /* sentinel */ }
 };
-MODULE_DEVICE_TABLE(of, meson_gx_pwrc_vpu_match_table);
 
 static struct platform_driver meson_gx_pwrc_vpu_driver = {
 	.probe	= meson_gx_pwrc_vpu_probe,
@@ -376,5 +373,4 @@ static struct platform_driver meson_gx_pwrc_vpu_driver = {
 		.of_match_table	= meson_gx_pwrc_vpu_match_table,
 	},
 };
-module_platform_driver(meson_gx_pwrc_vpu_driver);
-MODULE_LICENSE("GPL v2");
+builtin_platform_driver(meson_gx_pwrc_vpu_driver);

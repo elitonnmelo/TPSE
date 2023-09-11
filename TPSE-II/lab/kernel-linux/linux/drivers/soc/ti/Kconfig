@@ -8,6 +8,17 @@ menuconfig SOC_TI
 
 if SOC_TI
 
+config KEYSTONE_DSP_MEM
+	tristate "TI Keystone DSP Memory Mapping Driver"
+	depends on ARCH_KEYSTONE
+	help
+	  Userspace memory mapping interface driver for TI Keystone SoCs.
+	  Provides access to MSM SRAM memory regions and dedicated DDR
+	  carveout memory regions to user space to aid userspace loading
+	  of the DSPs within the SoC.
+
+	  If unsure, say N.
+
 config KEYSTONE_NAVIGATOR_QMSS
 	tristate "Keystone Queue Manager Sub System"
 	depends on ARCH_KEYSTONE
@@ -85,7 +96,7 @@ config TI_K3_SOCINFO
 
 config TI_PRUSS
 	tristate "TI PRU-ICSS Subsystem Platform drivers"
-	depends on SOC_AM33XX || SOC_AM43XX || SOC_DRA7XX || ARCH_KEYSTONE || ARCH_K3 || COMPILE_TEST
+	depends on SOC_AM33XX || SOC_AM43XX || SOC_DRA7XX || ARCH_KEYSTONE || ARCH_K3
 	select MFD_SYSCON
 	help
 	  TI PRU-ICSS Subsystem platform specific support.
@@ -94,10 +105,21 @@ config TI_PRUSS
 	  processors on various TI SoCs. It's safe to say N here if you're
 	  not interested in the PRU or if you are unsure.
 
+config TI_PAT
+	tristate "TI PAT DMA-BUF exporter"
+	depends on ARCH_K3 || COMPILE_TEST
+	depends on ARCH_DMA_ADDR_T_64BIT
+	select REGMAP
+	help
+	  Driver for TI Page-based Address Translator (PAT). This driver
+	  provides the an API allowing the remapping of a non-contiguous
+	  DMA-BUF into a contiguous one that is sutable for devices needing
+	  contiguous memory.
+
 endif # SOC_TI
 
 config TI_SCI_INTA_MSI_DOMAIN
 	bool
-	select GENERIC_MSI_IRQ
+	select GENERIC_MSI_IRQ_DOMAIN
 	help
 	  Driver to enable Interrupt Aggregator specific MSI Domain.

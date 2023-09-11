@@ -29,13 +29,15 @@
 #include <linux/pci.h>
 
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_crtc_helper.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_gem.h>
+#include <drm/drm_gem_vram_helper.h>
 #include <drm/drm_managed.h>
 
 #include "ast_drv.h"
 
-void ast_set_index_reg_mask(struct ast_device *ast,
+void ast_set_index_reg_mask(struct ast_private *ast,
 			    uint32_t base, uint8_t index,
 			    uint8_t mask, uint8_t val)
 {
@@ -45,7 +47,7 @@ void ast_set_index_reg_mask(struct ast_device *ast,
 	ast_set_index_reg(ast, base, index, tmp);
 }
 
-uint8_t ast_get_index_reg(struct ast_device *ast,
+uint8_t ast_get_index_reg(struct ast_private *ast,
 			  uint32_t base, uint8_t index)
 {
 	uint8_t ret;
@@ -54,7 +56,7 @@ uint8_t ast_get_index_reg(struct ast_device *ast,
 	return ret;
 }
 
-uint8_t ast_get_index_reg_mask(struct ast_device *ast,
+uint8_t ast_get_index_reg_mask(struct ast_private *ast,
 			       uint32_t base, uint8_t index, uint8_t mask)
 {
 	uint8_t ret;
@@ -65,9 +67,8 @@ uint8_t ast_get_index_reg_mask(struct ast_device *ast,
 
 static void ast_detect_config_mode(struct drm_device *dev, u32 *scu_rev)
 {
-	struct device_node *np = dev->dev->of_node;
-	struct ast_device *ast = to_ast_device(dev);
-	struct pci_dev *pdev = to_pci_dev(dev->dev);
+	struct device_node *np = dev->pdev->dev.of_node;
+	struct ast_private *ast = to_ast_private(dev);
 	uint32_t data, jregd0, jregd1;
 
 	/* Defaults */
@@ -84,7 +85,7 @@ static void ast_detect_config_mode(struct drm_device *dev, u32 *scu_rev)
 	}
 
 	/* Not all families have a P2A bridge */
-	if (pdev->device != PCI_CHIP_AST2000)
+	if (dev->pdev->device != PCI_CHIP_AST2000)
 		return;
 
 	/*
@@ -95,11 +96,6 @@ static void ast_detect_config_mode(struct drm_device *dev, u32 *scu_rev)
 	jregd0 = ast_get_index_reg_mask(ast, AST_IO_CRTC_PORT, 0xd0, 0xff);
 	jregd1 = ast_get_index_reg_mask(ast, AST_IO_CRTC_PORT, 0xd1, 0xff);
 	if (!(jregd0 & 0x80) || !(jregd1 & 0x10)) {
-		/* Patch AST2500 */
-		if (((pdev->revision & 0xF0) == 0x40)
-			&& ((jregd0 & AST_VRAM_INIT_STATUS_MASK) == 0))
-			ast_patch_ahb_2500(ast);
-
 		/* Double check it's actually working */
 		data = ast_read32(ast, 0xf004);
 		if ((data != 0xFFFFFFFF) && (data != 0x00)) {
@@ -122,8 +118,7 @@ static void ast_detect_config_mode(struct drm_device *dev, u32 *scu_rev)
 
 static int ast_detect_chip(struct drm_device *dev, bool *need_post)
 {
-	struct ast_device *ast = to_ast_device(dev);
-	struct pci_dev *pdev = to_pci_dev(dev->dev);
+	struct ast_private *ast = to_ast_private(dev);
 	uint32_t jreg, scu_rev;
 
 	/*
@@ -148,19 +143,16 @@ static int ast_detect_chip(struct drm_device *dev, bool *need_post)
 	ast_detect_config_mode(dev, &scu_rev);
 
 	/* Identify chipset */
-	if (pdev->revision >= 0x50) {
-		ast->chip = AST2600;
-		drm_info(dev, "AST 2600 detected\n");
-	} else if (pdev->revision >= 0x40) {
+	if (dev->pdev->revision >= 0x40) {
 		ast->chip = AST2500;
 		drm_info(dev, "AST 2500 detected\n");
-	} else if (pdev->revision >= 0x30) {
+	} else if (dev->pdev->revision >= 0x30) {
 		ast->chip = AST2400;
 		drm_info(dev, "AST 2400 detected\n");
-	} else if (pdev->revision >= 0x20) {
+	} else if (dev->pdev->revision >= 0x20) {
 		ast->chip = AST2300;
 		drm_info(dev, "AST 2300 detected\n");
-	} else if (pdev->revision >= 0x10) {
+	} else if (dev->pdev->revision >= 0x10) {
 		switch (scu_rev & 0x0300) {
 		case 0x0200:
 			ast->chip = AST1100;
@@ -207,14 +199,12 @@ static int ast_detect_chip(struct drm_device *dev, bool *need_post)
 			if (ast->chip == AST2500 &&
 			    scu_rev == 0x100)           /* ast2510 */
 				ast->support_wide_screen = true;
-			if (ast->chip == AST2600)		/* ast2600 */
-				ast->support_wide_screen = true;
 		}
 		break;
 	}
 
 	/* Check 3rd Tx option (digital output afaik) */
-	ast->tx_chip_types |= AST_TX_NONE_BIT;
+	ast->tx_chip_type = AST_TX_NONE;
 
 	/*
 	 * VGACRA3 Enhanced Color Mode Register, check if DVO is already
@@ -227,10 +217,10 @@ static int ast_detect_chip(struct drm_device *dev, bool *need_post)
 	if (!*need_post) {
 		jreg = ast_get_index_reg_mask(ast, AST_IO_CRTC_PORT, 0xa3, 0xff);
 		if (jreg & 0x80)
-			ast->tx_chip_types = AST_TX_SIL164_BIT;
+			ast->tx_chip_type = AST_TX_SIL164;
 	}
 
-	if ((ast->chip == AST2300) || (ast->chip == AST2400) || (ast->chip == AST2500)) {
+	if ((ast->chip == AST2300) || (ast->chip == AST2400)) {
 		/*
 		 * On AST2300 and 2400, look the configuration set by the SoC in
 		 * the SOC scratch register #1 bits 11:8 (interestingly marked
@@ -239,7 +229,7 @@ static int ast_detect_chip(struct drm_device *dev, bool *need_post)
 		jreg = ast_get_index_reg_mask(ast, AST_IO_CRTC_PORT, 0xd1, 0xff);
 		switch (jreg) {
 		case 0x04:
-			ast->tx_chip_types = AST_TX_SIL164_BIT;
+			ast->tx_chip_type = AST_TX_SIL164;
 			break;
 		case 0x08:
 			ast->dp501_fw_addr = drmm_kzalloc(dev, 32*1024, GFP_KERNEL);
@@ -252,33 +242,28 @@ static int ast_detect_chip(struct drm_device *dev, bool *need_post)
 			}
 			fallthrough;
 		case 0x0c:
-			ast->tx_chip_types = AST_TX_DP501_BIT;
-		}
-	} else if (ast->chip == AST2600) {
-		if (ast_get_index_reg_mask(ast, AST_IO_CRTC_PORT, 0xD1, TX_TYPE_MASK) ==
-		    ASTDP_DPMCU_TX) {
-			ast->tx_chip_types = AST_TX_ASTDP_BIT;
-			ast_dp_launch(&ast->base);
+			ast->tx_chip_type = AST_TX_DP501;
 		}
 	}
 
 	/* Print stuff for diagnostic purposes */
-	if (ast->tx_chip_types & AST_TX_NONE_BIT)
-		drm_info(dev, "Using analog VGA\n");
-	if (ast->tx_chip_types & AST_TX_SIL164_BIT)
+	switch(ast->tx_chip_type) {
+	case AST_TX_SIL164:
 		drm_info(dev, "Using Sil164 TMDS transmitter\n");
-	if (ast->tx_chip_types & AST_TX_DP501_BIT)
+		break;
+	case AST_TX_DP501:
 		drm_info(dev, "Using DP501 DisplayPort transmitter\n");
-	if (ast->tx_chip_types & AST_TX_ASTDP_BIT)
-		drm_info(dev, "Using ASPEED DisplayPort transmitter\n");
-
+		break;
+	default:
+		drm_info(dev, "Analog VGA only\n");
+	}
 	return 0;
 }
 
 static int ast_get_dram_info(struct drm_device *dev)
 {
-	struct device_node *np = dev->dev->of_node;
-	struct ast_device *ast = to_ast_device(dev);
+	struct device_node *np = dev->pdev->dev.of_node;
+	struct ast_private *ast = to_ast_private(dev);
 	uint32_t mcr_cfg, mcr_scu_mpll, mcr_scu_strap;
 	uint32_t denum, num, div, ref_pll, dsel;
 
@@ -401,43 +386,39 @@ static int ast_get_dram_info(struct drm_device *dev)
  */
 static void ast_device_release(void *data)
 {
-	struct ast_device *ast = data;
+	struct ast_private *ast = data;
 
 	/* enable standard VGA decode */
 	ast_set_index_reg(ast, AST_IO_CRTC_PORT, 0xa1, 0x04);
 }
 
-struct ast_device *ast_device_create(const struct drm_driver *drv,
-				     struct pci_dev *pdev,
-				     unsigned long flags)
+struct ast_private *ast_device_create(struct drm_driver *drv,
+				      struct pci_dev *pdev,
+				      unsigned long flags)
 {
 	struct drm_device *dev;
-	struct ast_device *ast;
+	struct ast_private *ast;
 	bool need_post;
 	int ret = 0;
 
-	ast = devm_drm_dev_alloc(&pdev->dev, drv, struct ast_device, base);
+	ast = devm_drm_dev_alloc(&pdev->dev, drv, struct ast_private, base);
 	if (IS_ERR(ast))
 		return ast;
 	dev = &ast->base;
 
+	dev->pdev = pdev;
 	pci_set_drvdata(pdev, dev);
-
-	ret = drmm_mutex_init(dev, &ast->ioregs_lock);
-	if (ret)
-		return ERR_PTR(ret);
 
 	ast->regs = pcim_iomap(pdev, 1, 0);
 	if (!ast->regs)
 		return ERR_PTR(-EIO);
 
 	/*
-	 * After AST2500, MMIO is enabled by default, and it should be adopted
-	 * to be compatible with Arm.
+	 * If we don't have IO space at all, use MMIO now and
+	 * assume the chip has MMIO enabled by default (rev 0x20
+	 * and higher).
 	 */
-	if (pdev->revision >= 0x40) {
-		ast->ioregs = ast->regs + AST_IO_MM_OFFSET;
-	} else if (!(pci_resource_flags(pdev, 2) & IORESOURCE_IO)) {
+	if (!(pci_resource_flags(dev->pdev, 2) & IORESOURCE_IO)) {
 		drm_info(dev, "platform has no IO space, trying MMIO\n");
 		ast->ioregs = ast->regs + AST_IO_MM_OFFSET;
 	}
@@ -467,8 +448,8 @@ struct ast_device *ast_device_create(const struct drm_driver *drv,
 
 	/* map reserved buffer */
 	ast->dp501_fw_buf = NULL;
-	if (ast->vram_size < pci_resource_len(pdev, 0)) {
-		ast->dp501_fw_buf = pci_iomap_range(pdev, 0, ast->vram_size, 0);
+	if (dev->vram_mm->vram_size < pci_resource_len(dev->pdev, 0)) {
+		ast->dp501_fw_buf = pci_iomap_range(dev->pdev, 0, dev->vram_mm->vram_size, 0);
 		if (!ast->dp501_fw_buf)
 			drm_info(dev, "failed to map reserved buffer!\n");
 	}

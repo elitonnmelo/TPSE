@@ -53,8 +53,12 @@ const struct sun4i_csi_format *sun4i_csi_find_format(const u32 *fourcc,
 static int sun4i_csi_querycap(struct file *file, void *priv,
 			      struct v4l2_capability *cap)
 {
+	struct sun4i_csi *csi = video_drvdata(file);
+
 	strscpy(cap->driver, KBUILD_MODNAME, sizeof(cap->driver));
 	strscpy(cap->card, "sun4i-csi", sizeof(cap->card));
+	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s",
+		 dev_name(csi->dev));
 
 	return 0;
 }
@@ -109,6 +113,8 @@ static void _sun4i_csi_try_fmt(struct sun4i_csi *csi,
 	pix->num_planes = _fmt->num_planes;
 	pix->pixelformat = _fmt->fourcc;
 
+	memset(pix->reserved, 0, sizeof(pix->reserved));
+
 	/* Align the width and height on the subsampling */
 	width = ALIGN(pix->width, _fmt->hsub);
 	height = ALIGN(pix->height, _fmt->vsub);
@@ -125,6 +131,8 @@ static void _sun4i_csi_try_fmt(struct sun4i_csi *csi,
 		bpl = pix->width / hsub * _fmt->bpp[i] / 8;
 		pix->plane_fmt[i].bytesperline = bpl;
 		pix->plane_fmt[i].sizeimage = bpl * pix->height / vsub;
+		memset(pix->plane_fmt[i].reserved, 0,
+		       sizeof(pix->plane_fmt[i].reserved));
 	}
 }
 
@@ -202,9 +210,9 @@ static int sun4i_csi_open(struct file *file)
 	if (ret)
 		return ret;
 
-	ret = pm_runtime_resume_and_get(csi->dev);
+	ret = pm_runtime_get_sync(csi->dev);
 	if (ret < 0)
-		goto err_unlock;
+		goto err_pm_put;
 
 	ret = v4l2_pipeline_pm_get(&csi->vdev.entity);
 	if (ret)
@@ -223,8 +231,6 @@ err_pipeline_pm_put:
 
 err_pm_put:
 	pm_runtime_put(csi->dev);
-
-err_unlock:
 	mutex_unlock(&csi->lock);
 
 	return ret;
@@ -359,7 +365,7 @@ int sun4i_csi_v4l2_register(struct sun4i_csi *csi)
 	vdev->lock = &csi->lock;
 
 	/* Set a default format */
-	csi->fmt.pixelformat = sun4i_csi_formats[0].fourcc;
+	csi->fmt.pixelformat = sun4i_csi_formats[0].fourcc,
 	csi->fmt.width = CSI_DEFAULT_WIDTH;
 	csi->fmt.height = CSI_DEFAULT_HEIGHT;
 	_sun4i_csi_try_fmt(csi, &csi->fmt);

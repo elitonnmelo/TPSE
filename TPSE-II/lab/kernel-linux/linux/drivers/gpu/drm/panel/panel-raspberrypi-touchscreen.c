@@ -29,7 +29,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-/*
+/**
  * Raspberry Pi 7" touchscreen panel driver.
  *
  * The 7" touchscreen consists of a DPI LCD panel, a Toshiba
@@ -43,8 +43,8 @@
 
 #include <linux/delay.h>
 #include <linux/err.h>
+#include <linux/fb.h>
 #include <linux/i2c.h>
-#include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
@@ -361,7 +361,8 @@ static const struct drm_panel_funcs rpi_touchscreen_funcs = {
 	.get_modes = rpi_touchscreen_get_modes,
 };
 
-static int rpi_touchscreen_probe(struct i2c_client *i2c)
+static int rpi_touchscreen_probe(struct i2c_client *i2c,
+				 const struct i2c_device_id *id)
 {
 	struct device *dev = &i2c->dev;
 	struct rpi_touchscreen *ts;
@@ -444,7 +445,7 @@ error:
 	return -ENODEV;
 }
 
-static void rpi_touchscreen_remove(struct i2c_client *i2c)
+static int rpi_touchscreen_remove(struct i2c_client *i2c)
 {
 	struct rpi_touchscreen *ts = i2c_get_clientdata(i2c);
 
@@ -453,6 +454,8 @@ static void rpi_touchscreen_remove(struct i2c_client *i2c)
 	drm_panel_remove(&ts->base);
 
 	mipi_dsi_device_unregister(ts->dsi);
+
+	return 0;
 }
 
 static int rpi_touchscreen_dsi_probe(struct mipi_dsi_device *dsi)

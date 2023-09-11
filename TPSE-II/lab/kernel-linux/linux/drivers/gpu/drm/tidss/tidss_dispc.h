@@ -61,6 +61,14 @@ enum dispc_dss_subrevision {
 	DISPC_K2G,
 	DISPC_AM65X,
 	DISPC_J721E,
+	DISPC_AM625,
+};
+
+enum dss_oldi_modes {
+	OLDI_MODE_OFF,				/* OLDI turned off / tied off in IP. */
+	OLDI_SINGLE_LINK_SINGLE_MODE,		/* Single Output over OLDI 0. */
+	OLDI_SINGLE_LINK_DUPLICATE_MODE,	/* Duplicate Output over OLDI 0 and 1. */
+	OLDI_DUAL_LINK,				/* Combined Output over OLDI 0 and 1. */
 };
 
 struct dispc_features {
@@ -88,6 +96,7 @@ struct dispc_features {
 extern const struct dispc_features dispc_k2g_feats;
 extern const struct dispc_features dispc_am65x_feats;
 extern const struct dispc_features dispc_j721e_feats;
+extern const struct dispc_features dispc_am625_feats;
 
 void dispc_set_irqenable(struct dispc_device *dispc, dispc_irq_t mask);
 dispc_irq_t dispc_read_and_clear_irqstatus(struct dispc_device *dispc);
@@ -123,10 +132,10 @@ int dispc_runtime_resume(struct dispc_device *dispc);
 int dispc_plane_check(struct dispc_device *dispc, u32 hw_plane,
 		      const struct drm_plane_state *state,
 		      u32 hw_videoport);
-void dispc_plane_setup(struct dispc_device *dispc, u32 hw_plane,
-		       const struct drm_plane_state *state,
-		       u32 hw_videoport);
-void dispc_plane_enable(struct dispc_device *dispc, u32 hw_plane, bool enable);
+int dispc_plane_setup(struct dispc_device *dispc, u32 hw_plane,
+		      const struct drm_plane_state *state,
+		      u32 hw_videoport);
+int dispc_plane_enable(struct dispc_device *dispc, u32 hw_plane, bool enable);
 const u32 *dispc_plane_formats(struct dispc_device *dispc, unsigned int *len);
 
 int dispc_init(struct tidss_device *tidss);
