@@ -1,0 +1,4 @@
+console="ttyS0,115200,n8"
+netargs="setenv bootargs console=ttyS0,115200,n8 root=/dev/mmcblk1p2 ro rootfstype=ext4 rootwait debug earlyprintk mem=512M"
+netboot="echo Booting from microSD ...; setenv autoload no ; fatload mmc 0:1 0x80007FC0 uImage ; fatload mmc 0:1 0x80F80000 am335x-boneblack.dtb ; run netargs ; bootm 0x80007FC0 - 0x80F80000"
+uenvcmd="run netboot"
