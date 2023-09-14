@@ -2,7 +2,7 @@
 
 Este repositório contém as práticas realizadas na disciplina de Técnicas para Programação de Sistemas Embarcados I e II utilizando a placa BeagleBone Black. O objetivo desta disciplina é proporcionar aos estudantes conhecimentos e habilidades necessárias para programar sistemas embarcados, que são dispositivos eletrônicos com capacidade de processamento e interação com o ambiente.
 
-## Práticas
+## Práticas TPSE I
 
 As práticas realizadas ao longo da disciplina são organizadas em pastas neste repositório. Cada pasta corresponde a uma prática específica e contém os arquivos e códigos desenvolvidos durante a atividade.
 
