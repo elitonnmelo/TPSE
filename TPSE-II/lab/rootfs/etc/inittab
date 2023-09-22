@@ -1,4 +1,6 @@
 null::sysinit:/bin/mount -a
 null::sysinit:/bin/hostname -F /etc/hostname
 null::respawn:/bin/cttyhack /bin/login root
-null::restart:/sbin/reboot
+null::restart:/sbin/reboot/
+null::respawn:/bin/node /app/pageWeb/server.js
+
