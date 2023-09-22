@@ -17,22 +17,21 @@
         <p>Esta é uma descrição da BeagleBone Black.</p>
         <p>A BeagleBone Black é uma placa de desenvolvimento de hardware de código aberto, semelhante ao Raspberry Pi, amplamente usada para projetos de eletrônica embarcada. Ela é baseada em um processador ARM, oferece várias portas de E/S (entrada/saída) e é usada para prototipagem rápida de sistemas embarcados e IoT.</p>
     </div>
-
-    <div id="leds" class="tab-content">
-        <h2>Controle de LEDs</h2>
-        <label for="led-select">Escolha um LED:</label>
-        <select id="led">
-            <option value="0">LED 0</option>
-            <option value="1">LED 1</option>
-            <option value="2">LED 2</option>
-            <option value="3">LED 3</option>
-        </select>
-        <br>
-        <button id="on-button" onclick="ligarLED()">Ligar</button>
-        <button id="off-button" onclick="desligarLED()">Desligar</button>
-        
-        <script src="script.js"></script>
+    <div id="leds" class="tab-content" style="text-align: center;">
+	 <h2>Controle de LEDs</h2>
+	 <label for="led-select">Escolha um LED:</label>
+	 <select id="led">
+		<option value="0">LED 0</option>
+		<option value="1">LED 1</option>
+		<option value="2">LED 2</option>
+		<option value="3">LED 3</option>
+	 </select>
+	 <br>
+	 <button id="on-button" onclick="ligarLED()">Ligar</button>
+	 <button id="off-button" onclick="desligarLED()">Desligar</button>
+	 <script src="script.js"></script>
     </div>
+
     
     <div id="piscaLeds" class="tab-content">
         <h2>Piscar LEDs</h2>
@@ -45,12 +44,15 @@
         </select>
         
         <h2>Informe quantas vezes o LED vai piscar (1-10):</h2>
+        <center>
         <input type="number" id="quantidade-piscadas" min="1" max="10">
         <button id="pisca-button" onclick="piscarLED()">Piscar</button>
+        </center>
         <script src="script.js"></script>
     </div>
     
     <div id="piscaIntervalo" class="tab-content">
+    <center>
 	    <h2>Piscar por Intervalo</h2>
 	    <p>Escolha o intervalo entre LEDs de 0 a 3:</p>
 	    <label for="intervaloInicio">Início:</label>
@@ -62,6 +64,7 @@
 	    <input type="number" id="quantidade-piscadas-intervalo" min="1" max="10">
 	    
 	    <button id="pisca-intervalo-button" onclick="piscarPorIntervalo()">Piscar</button>
+    </center>
     </div>
 
 </body>

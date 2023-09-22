@@ -41,6 +41,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     ligarBtn.addEventListener("click", ligarLED);
     desligarBtn.addEventListener("click", desligarLED);
+    
+    enviarComando(0, 0);
+    enviarComando(1, 0);
+    enviarComando(2, 0); 
+    enviarComando(3, 0);
 });
 
 
@@ -83,5 +88,52 @@ function piscarLED() {
         console.error("Informe um número de piscadas entre 1 e 10.");
     }
 }
+
+function piscarPorIntervalo() {
+    const inicio = parseInt(document.getElementById("intervaloInicio").value, 10);
+    const fim = parseInt(document.getElementById("intervaloFim").value, 10);
+    const quantidade = parseInt(document.getElementById("quantidade-piscadas-intervalo").value, 10);
+
+    // Valide os valores
+    if (isNaN(inicio) || isNaN(fim) || isNaN(quantidade) ||
+        inicio < 0 || inicio > 3 || fim < 0 || fim > 3 ||
+        inicio > fim || quantidade < 1 || quantidade > 10) {
+        alert("Por favor, insira valores válidos.");
+        return;
+    }
+
+    // Lógica para piscar LEDs dentro do intervalo especificado
+    const intervalo = fim - inicio + 1;
+    const leds = [];
+
+    for (let i = 0; i < intervalo; i++) {
+        leds.push(inicio + i);
+    }
+
+    // Repetir o piscar LEDs pelo número de vezes especificado
+    for (let j = 0; j < quantidade; j++) {
+        for (let i = 0; i < leds.length; i++) {
+            const led = leds[i];
+            enviarComando(led, 1); // Liga o LED
+            // Espera um pouco (tempo de espera entre piscadas)
+            delay(10000);
+            enviarComando(led, 0); // Desliga o LED
+            delay(10000);
+        }
+    }
+    enviarComando(0, 0);
+    enviarComando(1, 0);
+    enviarComando(2, 0); 
+    enviarComando(3, 0);
+}
+
+function delay(milliseconds) {
+    for (let i = 0; i < milliseconds; i++) {
+        // Esta função cria um atraso, mas não bloqueia a execução do código
+        // dentro do loop for.
+        // O tempo exato do atraso pode variar dependendo do ambiente de execução.
+    }
+}
+
 
 
